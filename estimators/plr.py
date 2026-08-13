@@ -1,287 +1,245 @@
 """
-Module for the two-way clustered PLR data-generating processes.
+Module for the partially linear DML estimator.
 
-Both DGPs draw data on an N x M grid of cells from the partially linear
-model
-    D_ij = m0(X_ij) + V_ij
-    Y_ij = theta0 * D_ij + g0(X_ij) + eps_ij
-where the covariates, V, and eps each have a row effect, a column
-effect, and a cell-specific part. The true nuisance functions come back
-with every sample, which is what allows the bias dissection.
-TwoWayPLRDGP spreads the cluster information over all five covariates; 
-ChiangPLRDGP concentrates it in X1 and X2, which under
-reveal=True are the exact row/column labels.
+PLRDMLEstimator combines a cross-fitting design with a base learner and
+estimates theta by the Robinson moment
+    theta_hat = mean(y_tilde * d_tilde) / mean(d_tilde^2)
+where y_tilde and d_tilde are the cross-fitted residuals. The standard
+error is the additive two-way cluster-robust one, used for every design.
+Because the DGP returns the true nuisances, each fit also records the
+term-by-term bias dissection; the exact error decomposition behind it
+is stated in protocols/P02_plr_anatomy.md.
 
 Classes:
-    ClusteredSample: one realised data set with the true nuisances.
-    TwoWayPLRDGP: diffuse DGP.
-    ChiangPLRDGP: concentrated DGP.
+    PLRDMLEstimator: DML estimator with pluggable design and learner.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 import numpy as np
 
-
-@dataclass(frozen=True)
-class ClusteredSample:
-    """One realised data set with the true nuisances.
-
-    Holds the data (x, d, y), the grid layout (rows, cols, n_rows,
-    n_cols), the truth (theta0, m0, l0), the residuals (v, eps), and
-    the row/column/cell parts of v (they sum to v).
-    """
-
-    x: np.ndarray
-    d: np.ndarray
-    y: np.ndarray
-    rows: np.ndarray
-    cols: np.ndarray
-    n_rows: int
-    n_cols: int
-    theta0: float
-    m0: np.ndarray
-    l0: np.ndarray
-    v: np.ndarray
-    eps: np.ndarray
-    v_row: np.ndarray
-    v_col: np.ndarray
-    v_cell: np.ndarray
+from dgps.plr import ClusteredSample
+from estimators.designs import (
+    DESIGNS,
+    EST_SEED_OFFSET,
+    Split,
+    require_canonical_grid,
+)
+from estimators.learners import LEARNERS, LearnerSpec
 
 
-def _m0_diffuse(x: np.ndarray) -> np.ndarray:
-    """P01 treatment mean: nonlinear with an interaction."""
-    return np.sin(1.4 * x[:, 0]) + 0.8 * x[:, 1] * x[:, 2] + 0.6 * np.cos(1.4 * x[:, 3])
+def two_way_variance(
+    psi: np.ndarray,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    n_rows: int,
+    n_cols: int,
+    variant: str = "cgm",
+) -> float:
+    """Two-way cluster variance of a sum of scores (un-scaled).
 
+    "additive" sums squared row sums and squared column sums (the form
+    in Chiang et al. 2022); "cgm" additionally subtracts the own-cell
+    diagonal (Cameron, Gelbach & Miller 2011) and is floored at zero.
 
-def _g0_diffuse(x: np.ndarray) -> np.ndarray:
-    """P01 baseline outcome: nonlinear with an interaction."""
-    return np.cos(1.4 * x[:, 0]) + 0.7 * x[:, 2] * x[:, 4] + 0.5 * np.sin(1.4 * x[:, 1])
-
-
-class TwoWayPLRDGP:
-    """Diffuse DGP: cluster information in all five covariates.
-
-    Attributes:
-        theta0 (float): true coefficient (the estimand).
-        cov_cluster (float): strength of the row/column effects in X.
-        sd_eps (float): scale of the error term.
-        sd_v (float): scale of the treatment residual; E[V^2] = sd_v^2.
-    """
-
-    def __init__(
-        self,
-        theta0: float = 1.0,
-        cov_cluster: float = 1.5,
-        sd_eps: float = 1.5,
-        sd_v: float = 1.5,
-    ) -> None:
-        self.theta0: float = theta0
-        self.cov_cluster: float = cov_cluster
-        self.sd_eps: float = sd_eps
-        self.sd_v: float = sd_v
-
-    @property
-    def true_theta(self) -> float:
-        """True value of the estimand."""
-        return self.theta0
-
-    @property
-    def name(self) -> str:
-        """Label used in result tables."""
-        return "two_way_plr"
-
-    def sample(
-        self, n_rows: int, n_cols: int, seed: int | None = None
-    ) -> ClusteredSample:
-        """Draw one two-way clustered data set.
-
-        Args:
-            n_rows (int): number of row clusters N.
-            n_cols (int): number of column clusters M.
-            seed (int | None): seed for reproducibility. Defaults to None.
-
-        Returns:
-            ClusteredSample: the realised data with the true nuisances.
-        """
-        rng = np.random.default_rng(seed)
-        p = 5
-        n = n_rows * n_cols
-        rows = np.repeat(np.arange(n_rows), n_cols)
-        cols = np.tile(np.arange(n_cols), n_rows)
-
-        # Covariates: cell noise plus row and column effects, unit variance
-        x_cell = rng.normal(size=(n, p))
-        x_row = rng.normal(size=(n_rows, p))[rows]
-        x_col = rng.normal(size=(n_cols, p))[cols]
-        cz = self.cov_cluster
-        x = (x_cell + cz * (x_row + x_col)) / math.sqrt(1.0 + 2.0 * cz * cz)
-
-        # Treatment residual: equal-thirds row/column/cell mixture
-        v_row_eff = rng.normal(size=n_rows)
-        v_col_eff = rng.normal(size=n_cols)
-        v_cell_eff = rng.normal(size=n)
-        v = self.sd_v * (v_row_eff[rows] + v_col_eff[cols] + v_cell_eff) / math.sqrt(3.0)
-        sv = self.sd_v / math.sqrt(3.0)
-
-        # Structural error: same mixture, independent draws
-        e_row_eff = rng.normal(size=n_rows)
-        e_col_eff = rng.normal(size=n_cols)
-        e_cell_eff = rng.normal(size=n)
-        eps = self.sd_eps * (e_row_eff[rows] + e_col_eff[cols] + e_cell_eff) / math.sqrt(3.0)
-
-        # Assemble outcome and oracle nuisances
-        m0 = _m0_diffuse(x)
-        g0 = _g0_diffuse(x)
-        d = m0 + v
-        y = self.theta0 * d + g0 + eps
-
-        return ClusteredSample(
-            x=x,
-            d=d,
-            y=y,
-            rows=rows,
-            cols=cols,
-            n_rows=n_rows,
-            n_cols=n_cols,
-            theta0=self.theta0,
-            m0=m0,
-            l0=self.theta0 * m0 + g0,
-            v=v,
-            eps=eps,
-            v_row=sv * v_row_eff[rows],
-            v_col=sv * v_col_eff[cols],
-            v_cell=sv * v_cell_eff,
-        )
-
-
-def _mix(
-    row: np.ndarray, col: np.ndarray, cell: np.ndarray,
-    rows: np.ndarray, cols: np.ndarray, share: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Row/col/cell mixture with `share` of the variance on row + col.
+    Args:
+        psi (np.ndarray): score values, shape (n,).
+        rows, cols (np.ndarray): cluster indices, shape (n,).
+        n_rows, n_cols (int): number of row and column clusters.
+        variant (str): "additive" or "cgm". Defaults to "cgm".
 
     Returns:
-        tuple: (mixture, row part, column part, cell part), each shape (n,).
+        float: the un-scaled variance of the score sum.
     """
-    wc = math.sqrt(share / 2.0)
-    we = math.sqrt(max(1.0 - share, 0.0))
-    parts = (wc * row[rows], wc * col[cols], we * cell)
-    return parts[0] + parts[1] + parts[2], parts[0], parts[1], parts[2]
+    rsum = np.bincount(rows, weights=psi, minlength=n_rows)
+    csum = np.bincount(cols, weights=psi, minlength=n_cols)
+    base = float(rsum @ rsum) + float(csum @ csum)
+    if variant == "additive":
+        return base
+    return max(base - float(psi @ psi), 0.0)
 
 
-class ChiangPLRDGP:
-    """Concentrated DGP: cluster information in X1 and X2 only.
+def _fold_predict(
+    splits: list[Split],
+    x: np.ndarray,
+    target: np.ndarray,
+    learner: LearnerSpec,
+    seed: int,
+) -> np.ndarray:
+    """Fit one fold learner per split and assemble out-of-fold predictions."""
+    out = np.empty(len(target))
+    for split_id, sp in enumerate(splits):
+        model = learner.fold(seed + 100003 * (split_id + 1))
+        model.fit(x[sp.train], target[sp.train])
+        out[sp.pred] = np.asarray(model.predict(x[sp.pred]))
+    return out
 
-    Under reveal=True, X1 and X2 are the exact row and column labels;
-    under reveal=False they are row/col/cell mixtures.
+
+def _dissection(
+    sample: ClusteredSample,
+    l_hat: np.ndarray,
+    m_hat: np.ndarray,
+    denom: float,
+    psi: np.ndarray,
+    n: int,
+) -> dict[str, float]:
+    """SE variants, bias dissection (P01), and Jacobian anatomy (P02).
+
+    With a = l_hat - l0 and b = m_hat - m0, the B_* terms are the exact
+    error channels of the Robinson estimator (see protocol P02); the
+    leak* terms split En(bV) into row, column, and cell parts.
+    """
+    var_sum_add = two_way_variance(
+        psi, sample.rows, sample.cols, sample.n_rows, sample.n_cols,
+        variant="additive",
+    )
+    var_sum_cgm = two_way_variance(
+        psi, sample.rows, sample.cols, sample.n_rows, sample.n_cols,
+        variant="cgm",
+    )
+
+    a = l_hat - sample.l0
+    b = m_hat - sample.m0
+    v = sample.v
+    eps = sample.eps
+    th0 = float(sample.theta0)
+    v_clu = sample.v_row + sample.v_col
+    c = psi - psi.mean()
+    se_iid = float(c.std(ddof=1) / math.sqrt(n) / denom)
+
+    return {
+        "se_hat_add": math.sqrt(var_sum_add) / (n * denom),
+        "se_hat_cgm": math.sqrt(var_sum_cgm) / (n * denom),
+        "se_hat_iid": se_iid,
+        "denom": denom,
+        "EnV2": float(np.mean(v * v)),
+        "Eb2": float(np.mean(b * b)),
+        "Ea2": float(np.mean(a * a)),
+        "B_ab": float(np.mean(a * b)),
+        "B_bb": float(-th0 * np.mean(b * b)),
+        "B_bV": float(th0 * np.mean(b * v)),
+        "B_aV": float(-np.mean(a * v)),
+        "B_eps": float(np.mean(eps * v) - np.mean(eps * b)),
+        "leak": float(np.mean(b * v_clu)),
+        "leak_row": float(np.mean(b * sample.v_row)),
+        "leak_col": float(np.mean(b * sample.v_col)),
+        "leak_own": float(np.mean(b * sample.v_cell)),
+        "coupling": float(
+            np.mean((a - th0 * b) ** 2) / max(np.mean(b * b), 1e-12)
+        ),
+    }
+
+
+class PLRDMLEstimator:
+    """Partially linear DML estimator with a pluggable cross-fitting design.
 
     Attributes:
-        theta0 (float): true coefficient (the estimand).
-        sd_v (float): scale of the treatment residual; E[V^2] = sd_v^2.
-        sd_eps (float): scale of the error term.
-        resid_share (float): share of residual variance on row + col.
-        cov_share (float): share of covariate variance on row + col.
-        reveal (bool): if True, X1 and X2 are exact row/column labels.
+        design (str): key into DESIGNS, or "oracle" for the true nuisances.
+        learner (str): key into LEARNERS, used for the treatment nuisance.
+        learner_l (str): learner for the outcome nuisance; defaults to
+            `learner`. A different choice is the mixed-learner arm.
     """
 
     def __init__(
         self,
-        theta0: float = 1.0,
-        sd_v: float = 1.0,
-        sd_eps: float = 1.0,
-        resid_share: float = 2.0 / 3.0,
-        cov_share: float = 2.0 / 3.0,
-        reveal: bool = False,
+        design: str,
+        learner: str,
+        learner_l: str | None = None,
     ) -> None:
-        self.theta0: float = float(theta0)
-        self.sd_v: float = float(sd_v)
-        self.sd_eps: float = float(sd_eps)
-        self.resid_share: float = float(resid_share)
-        self.cov_share: float = float(cov_share)
-        self.reveal: bool = bool(reveal)
-
-    @property
-    def true_theta(self) -> float:
-        """True value of the estimand."""
-        return self.theta0
+        if design != "oracle" and design not in DESIGNS:
+            raise KeyError(
+                f"unknown design {design!r}; choose 'oracle' or one of {list(DESIGNS)}"
+            )
+        if learner not in LEARNERS:
+            raise KeyError(f"unknown learner {learner!r}; choose from {list(LEARNERS)}")
+        if learner_l is not None and learner_l not in LEARNERS:
+            raise KeyError(f"unknown learner {learner_l!r}; choose from {list(LEARNERS)}")
+        self.design: str = design
+        self.learner: str = learner
+        self.learner_l: str = learner_l or learner
+        self._theta_hat: float = math.nan
+        self._se_hat: float = math.nan
+        self._diagnostics: dict[str, float] = {}
 
     @property
     def name(self) -> str:
-        """Label used in result tables."""
-        return f"chiang_plr_rs{self.resid_share:g}" + ("_reveal" if self.reveal else "")
+        """Label combining design and learner(s), e.g. as_iid+gbm."""
+        if self.learner_l == self.learner:
+            return f"{self.design}+{self.learner}"
+        return f"{self.design}+{self.learner}/{self.learner_l}"
 
-    def m0_of_x(self, x: np.ndarray) -> np.ndarray:
-        """True treatment mean function E[D | X]."""
-        return 0.9 * x[:, 0] - 0.6 * x[:, 1] + 0.6 * np.sin(1.5 * x[:, 2])
+    @property
+    def theta_hat(self) -> float:
+        """Point estimate from the most recent fit."""
+        return self._theta_hat
 
-    def g0_of_x(self, x: np.ndarray) -> np.ndarray:
-        """True baseline outcome function (outcome mean net of treatment)."""
-        return 0.7 * x[:, 0] + 0.5 * np.cos(1.4 * x[:, 1]) + 0.4 * x[:, 2] - 0.3 * x[:, 3]
+    @property
+    def se_hat(self) -> float:
+        """Additive two-way cluster-robust standard error."""
+        return self._se_hat
 
-    def sample(
-        self, n_rows: int, n_cols: int, seed: int | None = None
-    ) -> ClusteredSample:
-        """Draw one two-way clustered data set.
+    @property
+    def diagnostics(self) -> dict[str, float]:
+        """Bias-dissection and Jacobian-anatomy terms from the last fit."""
+        return self._diagnostics
+
+    def _splits(self, sample: ClusteredSample, seed: int) -> list[Split]:
+        """Build the design's fold splits from the grid dimensions and seed."""
+        if len(sample.y) != sample.n_rows * sample.n_cols:
+            raise ValueError(
+                "fold designs assume one observation per cell of the N x M grid"
+            )
+        if self.design == "multiway":
+            require_canonical_grid(
+                sample.rows, sample.cols, sample.n_rows, sample.n_cols
+            )
+        rng = np.random.default_rng(seed)
+        return DESIGNS[self.design](sample.n_rows, sample.n_cols, rng)
+
+    def _nuisances(self, sample: ClusteredSample, seed: int):
+        """Cross-fitted outcome and treatment predictions under the design.
+
+        The splits are built once and shared by both nuisances, as in
+        Chiang et al. (2022) (DoubleML does the same).
+        """
+        if self.design == "oracle":
+            return sample.l0.copy(), sample.m0.copy()
+        splits = self._splits(sample, seed)
+        l_hat = _fold_predict(splits, sample.x, sample.y, LEARNERS[self.learner_l], seed)
+        m_hat = _fold_predict(splits, sample.x, sample.d, LEARNERS[self.learner], seed)
+        return l_hat, m_hat
+
+    def fit(self, sample: ClusteredSample, seed: int | None = None) -> None:
+        """Estimate theta and its standard error, and record the dissection.
 
         Args:
-            n_rows (int): number of row clusters N.
-            n_cols (int): number of column clusters M.
-            seed (int | None): seed for reproducibility. Defaults to None.
-
-        Returns:
-            ClusteredSample: the realised data with the true nuisances.
+            sample (ClusteredSample): one realised data set.
+            seed (int | None): seed for the random parts of estimation;
+                offset internally so it never collides with the data
+                seed. Defaults to None.
         """
-        rng = np.random.default_rng(seed)
-        n = n_rows * n_cols
-        rows = np.repeat(np.arange(n_rows), n_cols)
-        cols = np.tile(np.arange(n_cols), n_rows)
+        est_seed = (seed + EST_SEED_OFFSET if seed is not None
+                    else int(np.random.default_rng().integers(1 << 62)))
+        l_hat, m_hat = self._nuisances(sample, est_seed)
 
-        # Covariates: cluster-loaded X1, X2 (exact labels under reveal)
-        if self.reveal:
-            x1 = rng.standard_normal(n_rows)[rows]
-            x2 = rng.standard_normal(n_cols)[cols]
-        else:
-            x1 = _mix(rng.standard_normal(n_rows), rng.standard_normal(n_cols),
-                      rng.standard_normal(n), rows, cols, self.cov_share)[0]
-            x2 = _mix(rng.standard_normal(n_rows), rng.standard_normal(n_cols),
-                      rng.standard_normal(n), rows, cols, self.cov_share)[0]
-        x = np.column_stack([x1, x2, rng.standard_normal(n), rng.standard_normal(n)])
+        # Robinson moment and influence function
+        y_tilde = sample.y - l_hat
+        d_tilde = sample.d - m_hat
+        denom = float(np.mean(d_tilde * d_tilde))
+        theta = float(np.mean(y_tilde * d_tilde) / denom)
+        psi = (y_tilde - theta * d_tilde) * d_tilde
+        n = len(sample.y)
 
-        # Residuals: shared-share mixture, independent systems
-        v, v_row, v_col, v_cell = _mix(
-            rng.standard_normal(n_rows), rng.standard_normal(n_cols),
-            rng.standard_normal(n), rows, cols, self.resid_share,
+        # Additive two-way cluster SE, applied uniformly to every design
+        var_sum_add = two_way_variance(
+            psi, sample.rows, sample.cols, sample.n_rows, sample.n_cols,
+            variant="additive",
         )
-        eps = self.sd_eps * _mix(
-            rng.standard_normal(n_rows), rng.standard_normal(n_cols),
-            rng.standard_normal(n), rows, cols, self.resid_share,
-        )[0]
-        v = self.sd_v * v
+        self._theta_hat = theta
+        self._se_hat = math.sqrt(var_sum_add) / (n * denom)
 
-        # Assemble outcome and oracle nuisances
-        m0 = self.m0_of_x(x)
-        g0 = self.g0_of_x(x)
-        d = m0 + v
-        y = self.theta0 * d + g0 + eps
+        # Bias dissection from the oracle nuisances
+        self._diagnostics = _dissection(sample, l_hat, m_hat, denom, psi, n)
 
-        return ClusteredSample(
-            x=x,
-            d=d,
-            y=y,
-            rows=rows,
-            cols=cols,
-            n_rows=n_rows,
-            n_cols=n_cols,
-            theta0=self.theta0,
-            m0=m0,
-            l0=self.theta0 * m0 + g0,
-            v=v,
-            eps=eps,
-            v_row=self.sd_v * v_row,
-            v_col=self.sd_v * v_col,
-            v_cell=self.sd_v * v_cell,
-        )
