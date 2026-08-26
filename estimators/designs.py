@@ -11,9 +11,15 @@ which cells to train on and which cells to predict for. The designs:
 * multiway: the K^2-fold scheme of Chiang, Kato, Ma & Sasaki (2022):
   hold out a row block and a column block together, so no training cell
   shares a row or column with a predicted cell.
+* cluster_oob_sub: a sub-sampled two-way cluster bootstrap forest where
+  each bag trains on a random ceil(N^0.45) x ceil(M^0.45) block of
+  clusters and each cell is predicted only by bags that drew neither its
+  row cluster nor its column cluster
 
 Variables:
     DESIGNS (dict): maps design names to fold functions.
+    BAGGED_DESIGNS (dict): maps design names to prediction functions.
+    SUB_EXPONENT (float): default subsampling exponent gamma.
 """
 
 from __future__ import annotations
@@ -24,7 +30,10 @@ from typing import Callable
 
 import numpy as np
 
+from estimators.learners import LearnerSpec
+
 MULTIWAY_K = 2
+SUB_EXPONENT = 0.45
 # Seed contract: the runner passes first_seed + sim_id to dgp.sample() and
 
 EST_SEED_OFFSET = 7_000_003
@@ -110,4 +119,94 @@ DESIGNS: dict[str, Callable[..., list[Split]]] = {
     "as_iid": cell_folds,
     "as_iid_matched": matched_cell_folds,
     "multiway": multiway_folds,
+}
+
+def predict_cluster_oob_sub(
+    x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
+    n_bags: int | None = None, min_cells: int = 10, min_trees: int = 8,
+    return_stats: bool = False, clip_predictions: bool = True,
+    sub_exponent: float = SUB_EXPONENT,
+):
+    """Sub-sampled two-way cluster forest with leave-row-and-column-out OOB.
+
+    Each of B bags trains one base learner on a random block of
+    ceil(N**gamma) rows x ceil(M**gamma) columns drawn without
+    replacement. A cell is then predicted by averaging only the bags that
+    drew neither its row cluster nor its column cluster, so no bag ever
+    saw a unit correlated with the target cell. Per-bag predictions are
+    clipped to the in-bag target range.
+
+    Args:
+        n_bags (int | None): number of bag draws B; defaults to the
+            learner's n_bags.
+        min_cells (int): minimum trained cells required to keep a bag.
+        min_trees (int): minimum omit-both bags required per cell.
+        return_stats (bool): if True, also return the bag-count statistics.
+        clip_predictions (bool): clip per-bag predictions to the in-bag range.
+        sub_exponent (float): subsampling exponent gamma.
+
+    Returns:
+        np.ndarray: out-of-bag predictions, and a stats dict if requested.
+
+    Raises:
+        RuntimeError: if any cell has fewer than min_trees omit-both bags.
+    """
+    m_r = max(2, int(np.ceil(n_rows ** sub_exponent)))
+    m_c = max(2, int(np.ceil(n_cols ** sub_exponent)))
+    B = learner.n_bags if n_bags is None else n_bags
+    rng = np.random.default_rng(seed)
+    n = len(target)
+    preds = np.zeros((B, n))
+    used = np.zeros(B, dtype=bool)
+    omit_row = np.ones((B, n_rows), dtype=bool)
+    omit_col = np.ones((B, n_cols), dtype=bool)
+
+    # Fit one base learner per bag on its drawn row x column block
+    for b in range(B):
+        rin = rng.choice(n_rows, size=m_r, replace=False)
+        cin = rng.choice(n_cols, size=m_c, replace=False)
+        omit_row[b, rin] = False
+        omit_col[b, cin] = False
+        row_mask = np.zeros(n_rows, dtype=bool)
+        row_mask[rin] = True
+        col_mask = np.zeros(n_cols, dtype=bool)
+        col_mask[cin] = True
+        in_bag = row_mask[rows] & col_mask[cols]
+        if in_bag.sum() < min_cells:
+            continue
+        model = learner.base(seed + b)
+        model.fit(x[in_bag], target[in_bag])
+        p = np.asarray(model.predict(x))
+        if clip_predictions:
+            p = np.clip(p, float(target[in_bag].min()), float(target[in_bag].max()))
+        preds[b] = p
+        used[b] = True
+
+    # Average, per cell, only the bags omitting both its row and column
+    out = np.empty(n)
+    both_counts = np.empty(n, dtype=int)
+    for idx in range(n):
+        both = used & omit_row[:, rows[idx]] & omit_col[:, cols[idx]]
+        both_counts[idx] = both.sum()
+        if both.sum() < min_trees:
+            raise RuntimeError(
+                f"cluster_oob_sub: only {int(both.sum())} omit-both bags for "
+                f"cell {idx} (min_trees={min_trees}); raise n_bags -- never "
+                "fall back to dishonest bags (audit repair)"
+            )
+        out[idx] = preds[both, idx].mean()
+    if return_stats:
+        stats = {
+            "mean_both_trees": float(both_counts.mean()),
+            "min_both_trees": float(both_counts.min()),
+        }
+        return out, stats
+    return out
+
+
+# Bagged designs produce predictions directly (a cell is an average over
+# its omit-both bags), so they cannot be expressed as list[Split] and
+# live in their own registry; PLRDMLEstimator dispatches on membership.
+BAGGED_DESIGNS: dict[str, Callable] = {
+    "cluster_oob_sub": predict_cluster_oob_sub,
 }
