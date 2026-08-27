@@ -22,6 +22,7 @@ import numpy as np
 
 from dgps.plr import ClusteredSample
 from estimators.designs import (
+    BAGGED_DESIGNS,
     DESIGNS,
     EST_SEED_OFFSET,
     Split,
@@ -136,10 +137,13 @@ class PLRDMLEstimator:
     """Partially linear DML estimator with a pluggable cross-fitting design.
 
     Attributes:
-        design (str): key into DESIGNS, or "oracle" for the true nuisances.
+        design (str): key into DESIGNS or BAGGED_DESIGNS, or "oracle" for
+            the true nuisances.
         learner (str): key into LEARNERS, used for the treatment nuisance.
         learner_l (str): learner for the outcome nuisance; defaults to
             `learner`. A different choice is the mixed-learner arm.
+        n_bags (int | None): override for the bagged designs' bag count B;
+            None uses the learner's default. Ignored by the fold designs.
     """
 
     def __init__(
@@ -147,10 +151,13 @@ class PLRDMLEstimator:
         design: str,
         learner: str,
         learner_l: str | None = None,
+        n_bags: int | None = None,
     ) -> None:
-        if design != "oracle" and design not in DESIGNS:
+        if (design != "oracle" and design not in DESIGNS
+                and design not in BAGGED_DESIGNS):
             raise KeyError(
-                f"unknown design {design!r}; choose 'oracle' or one of {list(DESIGNS)}"
+                f"unknown design {design!r}; choose 'oracle' or one of "
+                f"{[*DESIGNS, *BAGGED_DESIGNS]}"
             )
         if learner not in LEARNERS:
             raise KeyError(f"unknown learner {learner!r}; choose from {list(LEARNERS)}")
@@ -159,9 +166,11 @@ class PLRDMLEstimator:
         self.design: str = design
         self.learner: str = learner
         self.learner_l: str = learner_l or learner
+        self.n_bags: int | None = n_bags
         self._theta_hat: float = math.nan
         self._se_hat: float = math.nan
         self._diagnostics: dict[str, float] = {}
+        self._oob_stats: dict[str, float] | None = None
 
     @property
     def name(self) -> str:
@@ -201,11 +210,29 @@ class PLRDMLEstimator:
     def _nuisances(self, sample: ClusteredSample, seed: int):
         """Cross-fitted outcome and treatment predictions under the design.
 
-        The splits are built once and shared by both nuisances, as in
-        Chiang et al. (2022) (DoubleML does the same).
+        Fold designs build the splits once and share them between both
+        nuisances, as in Chiang et al. (2022) (DoubleML does the same).
+        The bagged designs draw a separate bag stream for the outcome
+        nuisance, this is to have less covariance and joint movement of cells
+        in the drawn bags and protect against avoidable bias.
         """
+        self._oob_stats = None
         if self.design == "oracle":
             return sample.l0.copy(), sample.m0.copy()
+        if self.design in BAGGED_DESIGNS:
+            predict = BAGGED_DESIGNS[self.design]
+            kwargs = {} if self.n_bags is None else {"n_bags": self.n_bags}
+            l_hat = predict(
+                sample.x, sample.y, sample.rows, sample.cols,
+                sample.n_rows, sample.n_cols, LEARNERS[self.learner_l],
+                seed + 7919, **kwargs,
+            )
+            m_hat, self._oob_stats = predict(
+                sample.x, sample.d, sample.rows, sample.cols,
+                sample.n_rows, sample.n_cols, LEARNERS[self.learner],
+                seed, return_stats=True, **kwargs,
+            )
+            return l_hat, m_hat
         splits = self._splits(sample, seed)
         l_hat = _fold_predict(splits, sample.x, sample.y, LEARNERS[self.learner_l], seed)
         m_hat = _fold_predict(splits, sample.x, sample.d, LEARNERS[self.learner], seed)
@@ -242,4 +269,8 @@ class PLRDMLEstimator:
 
         # Bias dissection from the oracle nuisances
         self._diagnostics = _dissection(sample, l_hat, m_hat, denom, psi, n)
+        if self._oob_stats is not None:
+            self._diagnostics.update(
+                {f"oob_{k}": val for k, val in self._oob_stats.items()}
+            )
 
