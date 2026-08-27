@@ -105,14 +105,14 @@ CAMPAIGNS: dict[str, list[SimulationScenario]] = {
         _plr_campaign(
             "p01_design_comparison",
             TwoWayPLRDGP, P01_DGP_PARAMS,
-            ["no_cf", "as_iid", "multiway"],
+            ["no_cf", "as_iid", "multiway", "cluster_oob_sub"],
             [("lasso", None), ("gbm", None)], [(24, 24)],
             n_simulations=200, first_seed=1,
         )
         + _plr_campaign(
             "p01_design_comparison",
             TwoWayPLRDGP, P01_DGP_PARAMS,
-            ["as_iid", "multiway"],
+            ["as_iid", "multiway", "cluster_oob_sub"],
             [("srf", "gbm")], [(24, 24)],
             n_simulations=200, first_seed=1,
         )
@@ -128,7 +128,7 @@ CAMPAIGNS: dict[str, list[SimulationScenario]] = {
         _plr_campaign(
             "smoke",
             TwoWayPLRDGP, P01_DGP_PARAMS,
-            ["no_cf", "as_iid", "multiway"],
+            ["no_cf", "as_iid", "multiway", "cluster_oob_sub"],
             [("gbm", None), ("lasso", None), ("srf", "gbm")], [(12, 12)],
             n_simulations=2, first_seed=1,
         )
