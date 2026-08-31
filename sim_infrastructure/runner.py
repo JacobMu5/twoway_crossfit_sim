@@ -144,3 +144,4 @@ class SimulationRunner:
             if key in _MCSE_KEYS and len(vals) > 1:
                 summary[f"{key}_mcse"] = float(vals.std(ddof=1) / math.sqrt(len(vals)))
         return summary
+
