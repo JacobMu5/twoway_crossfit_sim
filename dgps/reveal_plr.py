@@ -1,13 +1,13 @@
 """
-Module for the paper DGP: the concentrated reveal PLR data-generating
-process. RevealPLRDGP puts the exact row/column labels in X1/X2 (so a
-flexible learner can absorb V's cluster shocks which produces the as-IID leak) 
-and uses the diffuse DGP's (can be found in the leagacy_plr.py code)
-nonlinear/interaction nuisance forms with Cov(g0, m0) = 0. 
-Superseded DGPs live in dgps.legacy_plr.
+Module for the paper DGP: the confounded reveal PLR data-generating
+process. RevealPLRDGP puts the exact row/column labels in X1/X2, so a
+flexible learner can absorb V's cluster shocks (the as-IID leak), and
+shares two even, nonlinear channels between m0 and g0, so that
+Cov(g0, m0) = +0.314 and OLS is inconsistent with or without linear
+controls. Superseded DGPs live in dgps.legacy_plr.
 
 Classes:
-    RevealPLRDGP: the paper DGP (revealed labels, orthogonal nuisances).
+    RevealPLRDGP: the paper DGP (revealed labels, confounded nuisances).
 """
 
 from __future__ import annotations
@@ -20,13 +20,12 @@ from dgps.plr import ClusteredSample
 
 
 class RevealPLRDGP:
-    """Concentrated two-way PLR DGP: X1 and X2 ARE the cluster labels.
+    """Concentrated two-way PLR DGP: labels revealed, nuisances confounded.
 
     X1 is the row effect, X2 the column effect (one N(0,1) draw per
     cluster), X3-X5 are pure cell noise, and the residuals place
     resid_share of their variance on row + column (equal thirds
-    row/col/cell at the default 2/3). The nuisance functions use the
-    diffuse DGP's nonlinear/interaction forms with Cov(g0, m0) = 0.
+    row/col/cell at the default 2/3).
 
     Attributes:
         theta0 (float): true coefficient (the estimand).
@@ -60,17 +59,19 @@ class RevealPLRDGP:
         Fresh label for the combo nuisances: do not confuse 
         with the archived chiang_CSVs 
         """
-        return "combo_reveal"
+        return "confounded_reveal"  
 
     def m0_of_x(self, x: np.ndarray) -> np.ndarray:
         """True treatment mean function E[D | X]."""
-        return (np.sin(1.4 * x[:, 0]) + 0.8 * x[:, 1] * x[:, 2]
-                + 0.6 * np.cos(1.4 * x[:, 3]))
+        step = np.where(np.abs(x[:, 3]) > 0.67, 1.0, -1.0)
+        return np.sin(1.4 * x[:, 0]) + 0.8 * x[:, 1] * x[:, 2] + 0.6 * step
 
     def g0_of_x(self, x: np.ndarray) -> np.ndarray:
-        """True baseline outcome (orthogonal to m0: Cov(g0, m0) = 0)."""
-        return (np.cos(1.4 * x[:, 0]) + 0.7 * x[:, 2] * x[:, 4]
-                + 0.5 * np.sin(1.4 * x[:, 1]))
+        """True baseline outcome with the two confounding loadings."""
+        step = np.where(np.abs(x[:, 3]) > 0.67, 1.0, -1.0)
+        g0 = (np.cos(1.4 * x[:, 0]) + 0.7 * x[:, 2] * x[:, 4]
+              + 0.5 * np.sin(1.4 * x[:, 1]))
+        return g0 + 0.75 * step - 0.17 * x[:, 1] * x[:, 2]
 
     def sample(
         self, n_rows: int, n_cols: int, seed: int | None = None
