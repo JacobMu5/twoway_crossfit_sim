@@ -6,8 +6,6 @@ which cells to train on and which cells to predict for. The designs:
 
 * no_cf: no cross-fitting; train and predict on everything.
 * as_iid: ordinary K-fold over cells, ignoring the clustering.
-* as_iid_matched: as-IID folds with training thinned to n/4 cells, to
-  match the multiway training size.
 * multiway: the K^2-fold scheme of Chiang, Kato, Ma & Sasaki (2022):
   hold out a row block and a column block together, so no training cell
   shares a row or column with a predicted cell.
@@ -15,6 +13,10 @@ which cells to train on and which cells to predict for. The designs:
   each bag trains on a random ceil(N^0.45) x ceil(M^0.45) block of
   clusters and each cell is predicted only by bags that drew neither its
   row cluster nor its column cluster
+* cluster_oob_nodrop: the no-drop version of cluster_oob_sub (the
+  subsampled no-drop variant discussed by Chen & Chiang 2026): identical
+  bag draws, but every cell averages ALL fitted bags, that is bags sharing the
+  cell's row or column cluster (its "cross") are not dropped.
 
 Variables:
     DESIGNS (dict): maps design names to fold functions.
@@ -62,23 +64,6 @@ def cell_folds(
             for fold in np.array_split(order, k)]
 
 
-def matched_cell_folds(
-    n_rows: int, n_cols: int, rng: np.random.Generator
-) -> list[Split]:
-    """K=2 cell folds with training sets thinned to n/4 cells.
-
-    This matches the multiway training size, so the as-IID vs multiway
-    comparison isolates fold geometry from data volume.
-    """
-    n = n_rows * n_cols
-    if n < 40:
-        raise ValueError(
-            f"matched design needs n >= 40 cells for the n/4 thinning, got {n}"
-        )
-    return [Split(rng.choice(sp.train, size=round(n / 4), replace=False), sp.pred)
-            for sp in cell_folds(n_rows, n_cols, rng)]
-
-
 def multiway_folds(
     n_rows: int, n_cols: int, rng: np.random.Generator, k: int = MULTIWAY_K
 ) -> list[Split]:
@@ -117,7 +102,6 @@ def require_canonical_grid(rows, cols, n_rows, n_cols) -> None:
 DESIGNS: dict[str, Callable[..., list[Split]]] = {
     "no_cf": full_split,
     "as_iid": cell_folds,
-    "as_iid_matched": matched_cell_folds,
     "multiway": multiway_folds,
 }
 
@@ -203,10 +187,68 @@ def predict_cluster_oob_sub(
         return out, stats
     return out
 
+def predict_cluster_nodrop(
+    x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
+    n_bags: int | None = None, min_cells: int = 10, min_trees: int = 8,
+    return_stats: bool = False, clip_predictions: bool = True,
+    sub_exponent: float = SUB_EXPONENT,
+):
+    """No-drop comparison baseline: the same bags, averaged WITHOUT the drop.
+
+    Identical to predict_cluster_oob_sub -- same block sizes, same bag draws
+    from the same seed -- except every cell averages ALL fitted bags instead of
+    only the omit-both ones. A cell is therefore predicted partly by bags that
+    trained on its own row or column cluster, so the fitted nuisance error is
+    correlated with the cell's own cluster shock (the "leak"). Running this next
+    to predict_cluster_oob_sub with common draws isolates exactly what the
+    cross-drop buys: honesty (a structurally mean-zero own-cluster term) versus
+    an equal-or-larger bag average whose validity rests on that leak cancelling.
+
+    min_trees is accepted for signature parity with the honest design but is not
+    an honesty guard here (no omit-both pool to starve); it is unused.
+
+    Returns:
+        np.ndarray: predictions, and a stats dict if requested.
+    """
+    m_r = max(2, int(np.ceil(n_rows ** sub_exponent)))
+    m_c = max(2, int(np.ceil(n_cols ** sub_exponent)))
+    B = learner.n_bags if n_bags is None else n_bags
+    rng = np.random.default_rng(seed)
+    n = len(target)
+    preds = np.zeros((B, n))
+    used = np.zeros(B, dtype=bool)
+    for b in range(B):
+        rin = rng.choice(n_rows, size=m_r, replace=False)
+        cin = rng.choice(n_cols, size=m_c, replace=False)
+        row_mask = np.zeros(n_rows, dtype=bool)
+        row_mask[rin] = True
+        col_mask = np.zeros(n_cols, dtype=bool)
+        col_mask[cin] = True
+        in_bag = row_mask[rows] & col_mask[cols]
+        if in_bag.sum() < min_cells:
+            continue
+        model = learner.base(seed + b)
+        model.fit(x[in_bag], target[in_bag])
+        p = np.asarray(model.predict(x))
+        if clip_predictions:
+            p = np.clip(p, float(target[in_bag].min()), float(target[in_bag].max()))
+        preds[b] = p
+        used[b] = True
+    if not used.any():
+        raise RuntimeError(
+            "cluster_oob_nodrop: no bag met min_cells; raise sub_exponent or "
+            "the grid size -- never return an empty average (audit repair)"
+        )
+    out = preds[used].mean(axis=0)
+    if return_stats:
+        return out, {"mean_both_trees": float(used.sum()), "min_both_trees": float(used.sum())}
+    return out
 
 # Bagged designs produce predictions directly (a cell is an average over
 # its omit-both bags), so they cannot be expressed as list[Split] and
 # live in their own registry; PLRDMLEstimator dispatches on membership.
+# cluster_oob_nodrop is the honesty-off twin of cluster_oob_sub (see above).
 BAGGED_DESIGNS: dict[str, Callable] = {
     "cluster_oob_sub": predict_cluster_oob_sub,
+    "cluster_oob_nodrop": predict_cluster_nodrop,
 }
