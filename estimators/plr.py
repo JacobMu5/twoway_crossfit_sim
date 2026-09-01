@@ -144,6 +144,9 @@ class PLRDMLEstimator:
             `learner`. A different choice is the mixed-learner arm.
         n_bags (int | None): override for the bagged designs' bag count B;
             None uses the learner's default. Ignored by the fold designs.
+        sub_exponent (float | None): override for the bagged designs'
+            subsampling exponent gamma; None uses the design default.
+            Ignored by the fold designs.
     """
 
     def __init__(
@@ -152,6 +155,7 @@ class PLRDMLEstimator:
         learner: str,
         learner_l: str | None = None,
         n_bags: int | None = None,
+        sub_exponent: float | None = None,
     ) -> None:
         if (design != "oracle" and design not in DESIGNS
                 and design not in BAGGED_DESIGNS):
@@ -167,6 +171,7 @@ class PLRDMLEstimator:
         self.learner: str = learner
         self.learner_l: str = learner_l or learner
         self.n_bags: int | None = n_bags
+        self.sub_exponent: float | None = sub_exponent
         self._theta_hat: float = math.nan
         self._se_hat: float = math.nan
         self._diagnostics: dict[str, float] = {}
@@ -221,7 +226,9 @@ class PLRDMLEstimator:
             return sample.l0.copy(), sample.m0.copy()
         if self.design in BAGGED_DESIGNS:
             predict = BAGGED_DESIGNS[self.design]
-            kwargs = {} if self.n_bags is None else {"n_bags": self.n_bags}
+            kwargs: dict = {} if self.n_bags is None else {"n_bags": self.n_bags}
+            if self.sub_exponent is not None:
+                kwargs["sub_exponent"] = self.sub_exponent
             l_hat = predict(
                 sample.x, sample.y, sample.rows, sample.cols,
                 sample.n_rows, sample.n_cols, LEARNERS[self.learner_l],
