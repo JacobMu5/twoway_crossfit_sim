@@ -105,6 +105,53 @@ DESIGNS: dict[str, Callable[..., list[Split]]] = {
     "multiway": multiway_folds,
 }
 
+def _fit_bags(
+    x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
+    n_bags: int | None, min_cells: int, clip_predictions: bool,
+    sub_exponent: float,
+):
+    """Fit one base learner per sub-sampled cluster bag; shared bag loop.
+
+    Each of B bags trains on a random ceil(N**gamma) x ceil(M**gamma) block
+    of clusters drawn without replacement and predicts every cell, clipped
+    to the in-bag target range. Both bagged designs draw the same bags from
+    the same seed and differ only in how they average them, so this loop is
+    written once. Returns the per-bag predictions, the used-bag mask, and
+    the per-bag row/column omission masks.
+    """
+    m_r = max(2, int(np.ceil(n_rows ** sub_exponent)))
+    m_c = max(2, int(np.ceil(n_cols ** sub_exponent)))
+    B = learner.n_bags if n_bags is None else n_bags
+    rng = np.random.default_rng(seed)
+    n = len(target)
+    preds = np.zeros((B, n))
+    used = np.zeros(B, dtype=bool)
+    omit_row = np.ones((B, n_rows), dtype=bool)
+    omit_col = np.ones((B, n_cols), dtype=bool)
+
+    # Fit one base learner per bag on its drawn row x column block
+    for b in range(B):
+        rin = rng.choice(n_rows, size=m_r, replace=False)
+        cin = rng.choice(n_cols, size=m_c, replace=False)
+        omit_row[b, rin] = False
+        omit_col[b, cin] = False
+        row_mask = np.zeros(n_rows, dtype=bool)
+        row_mask[rin] = True
+        col_mask = np.zeros(n_cols, dtype=bool)
+        col_mask[cin] = True
+        in_bag = row_mask[rows] & col_mask[cols]
+        if in_bag.sum() < min_cells:
+            continue
+        model = learner.make(seed + b)
+        model.fit(x[in_bag], target[in_bag])
+        p = np.asarray(model.predict(x))
+        if clip_predictions:
+            p = np.clip(p, float(target[in_bag].min()), float(target[in_bag].max()))
+        preds[b] = p
+        used[b] = True
+    return preds, used, omit_row, omit_col
+
+
 def predict_cluster_oob_sub(
     x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
     n_bags: int | None = None, min_cells: int = 10, min_trees: int = 8,
@@ -135,36 +182,11 @@ def predict_cluster_oob_sub(
     Raises:
         RuntimeError: if any cell has fewer than min_trees omit-both bags.
     """
-    m_r = max(2, int(np.ceil(n_rows ** sub_exponent)))
-    m_c = max(2, int(np.ceil(n_cols ** sub_exponent)))
-    B = learner.n_bags if n_bags is None else n_bags
-    rng = np.random.default_rng(seed)
+    preds, used, omit_row, omit_col = _fit_bags(
+        x, target, rows, cols, n_rows, n_cols, learner, seed,
+        n_bags, min_cells, clip_predictions, sub_exponent,
+    )
     n = len(target)
-    preds = np.zeros((B, n))
-    used = np.zeros(B, dtype=bool)
-    omit_row = np.ones((B, n_rows), dtype=bool)
-    omit_col = np.ones((B, n_cols), dtype=bool)
-
-    # Fit one base learner per bag on its drawn row x column block
-    for b in range(B):
-        rin = rng.choice(n_rows, size=m_r, replace=False)
-        cin = rng.choice(n_cols, size=m_c, replace=False)
-        omit_row[b, rin] = False
-        omit_col[b, cin] = False
-        row_mask = np.zeros(n_rows, dtype=bool)
-        row_mask[rin] = True
-        col_mask = np.zeros(n_cols, dtype=bool)
-        col_mask[cin] = True
-        in_bag = row_mask[rows] & col_mask[cols]
-        if in_bag.sum() < min_cells:
-            continue
-        model = learner.base(seed + b)
-        model.fit(x[in_bag], target[in_bag])
-        p = np.asarray(model.predict(x))
-        if clip_predictions:
-            p = np.clip(p, float(target[in_bag].min()), float(target[in_bag].max()))
-        preds[b] = p
-        used[b] = True
 
     # Average, per cell, only the bags omitting both its row and column
     out = np.empty(n)
@@ -210,30 +232,10 @@ def predict_cluster_nodrop(
     Returns:
         np.ndarray: predictions, and a stats dict if requested.
     """
-    m_r = max(2, int(np.ceil(n_rows ** sub_exponent)))
-    m_c = max(2, int(np.ceil(n_cols ** sub_exponent)))
-    B = learner.n_bags if n_bags is None else n_bags
-    rng = np.random.default_rng(seed)
-    n = len(target)
-    preds = np.zeros((B, n))
-    used = np.zeros(B, dtype=bool)
-    for b in range(B):
-        rin = rng.choice(n_rows, size=m_r, replace=False)
-        cin = rng.choice(n_cols, size=m_c, replace=False)
-        row_mask = np.zeros(n_rows, dtype=bool)
-        row_mask[rin] = True
-        col_mask = np.zeros(n_cols, dtype=bool)
-        col_mask[cin] = True
-        in_bag = row_mask[rows] & col_mask[cols]
-        if in_bag.sum() < min_cells:
-            continue
-        model = learner.base(seed + b)
-        model.fit(x[in_bag], target[in_bag])
-        p = np.asarray(model.predict(x))
-        if clip_predictions:
-            p = np.clip(p, float(target[in_bag].min()), float(target[in_bag].max()))
-        preds[b] = p
-        used[b] = True
+    preds, used, _, _ = _fit_bags(
+        x, target, rows, cols, n_rows, n_cols, learner, seed,
+        n_bags, min_cells, clip_predictions, sub_exponent,
+    )
     if not used.any():
         raise RuntimeError(
             "cluster_oob_nodrop: no bag met min_cells; raise sub_exponent or "
