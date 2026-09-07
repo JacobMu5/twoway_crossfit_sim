@@ -35,7 +35,7 @@ def perf(rows, designs, learners, grid, caption, label):
         if key in by:
             warn(f"duplicate row {key} at {grid}x{grid}; keeping the last")
         by[key] = r
-    out = [r"\begin{table}", r"\centering",
+    out = [r"\begin{table}[!ht]", r"\centering",
            r"\caption{%s}  %% <-- your caption" % caption,
            r"\label{%s}" % label, r"\begin{tabular}{lrrrrr}", r"\toprule",
            r"Design & Bias & SD & RMSE & SE/SD & Cov.\ (95\%) \\"]
@@ -67,7 +67,7 @@ def anat(rows, designs, grids, caption, label):
             warn(f"duplicate row {key}; it will appear twice in the table")
         seen.add(key)
         by.setdefault(r["design"], []).append(r)
-    out = [r"\begin{table}", r"\centering",
+    out = [r"\begin{table}[!ht]", r"\centering",
            r"\caption{%s}  %% <-- your caption" % caption,
            r"\label{%s}" % label, r"\begin{tabular}{lrrrrrr}", r"\toprule",
            r"Design & $N{=}M$ & Bias & SD & Cov. & Cov.$^{\dagger}$ & Leak \\", r"\midrule"]
@@ -100,7 +100,7 @@ def gamma(rows, caption, label):
         if r["design"] in by:
             warn(f"duplicate row for design={r['design']!r} at 32x32; keeping the last")
         by[r["design"]] = r
-    out = [r"\begin{table}", r"\centering",
+    out = [r"\begin{table}[!ht]", r"\centering",
            r"\caption{%s}  %% <-- your caption" % caption,
            r"\label{%s}" % label, r"\begin{tabular}{lrrrrr}", r"\toprule",
            r"$\gamma$ & Bias & SD & RMSE & SE/SD & Cov.\ (95\%) \\", r"\midrule"]
@@ -127,7 +127,7 @@ warn(f"loaded {len(rows)} rows from {', '.join(paths)}")
 
 if name == "ch4_perf":
     print(perf(rows, ["no_cf", "as_iid", "multiway"], ["lasso", "gbm"], 32,
-    
+
                "Classical cross-fitting designs across learners.", "tab:ch4-perf"))
 elif name == "ch4_anat":
     print(anat(rows, ["oracle", "as_iid", "multiway"], [32, 64],
