@@ -28,6 +28,7 @@ from estimators.designs import (
     Split,
     require_canonical_grid,
 )
+from estimators.diagnostics import error_decomposition
 from estimators.learners import LEARNERS, LearnerSpec
 
 
@@ -72,65 +73,10 @@ def _fold_predict(
     """Fit one fold learner per split and assemble out-of-fold predictions."""
     out = np.empty(len(target))
     for split_id, sp in enumerate(splits):
-        model = learner.fold(seed + 100003 * (split_id + 1))
+        model = learner.make(seed + 100003 * (split_id + 1))
         model.fit(x[sp.train], target[sp.train])
         out[sp.pred] = np.asarray(model.predict(x[sp.pred]))
     return out
-
-
-def _dissection(
-    sample: ClusteredSample,
-    l_hat: np.ndarray,
-    m_hat: np.ndarray,
-    denom: float,
-    psi: np.ndarray,
-    n: int,
-) -> dict[str, float]:
-    """SE variants, bias dissection (P01), and Jacobian anatomy (P02).
-
-    With a = l_hat - l0 and b = m_hat - m0, the B_* terms are the exact
-    error channels of the Robinson estimator (see protocol P02); the
-    leak* terms split En(bV) into row, column, and cell parts.
-    """
-    var_sum_add = two_way_variance(
-        psi, sample.rows, sample.cols, sample.n_rows, sample.n_cols,
-        variant="additive",
-    )
-    var_sum_cgm = two_way_variance(
-        psi, sample.rows, sample.cols, sample.n_rows, sample.n_cols,
-        variant="cgm",
-    )
-
-    a = l_hat - sample.l0
-    b = m_hat - sample.m0
-    v = sample.v
-    eps = sample.eps
-    th0 = float(sample.theta0)
-    v_clu = sample.v_row + sample.v_col
-    c = psi - psi.mean()
-    se_iid = float(c.std(ddof=1) / math.sqrt(n) / denom)
-
-    return {
-        "se_hat_add": math.sqrt(var_sum_add) / (n * denom),
-        "se_hat_cgm": math.sqrt(var_sum_cgm) / (n * denom),
-        "se_hat_iid": se_iid,
-        "denom": denom,
-        "EnV2": float(np.mean(v * v)),
-        "Eb2": float(np.mean(b * b)),
-        "Ea2": float(np.mean(a * a)),
-        "B_ab": float(np.mean(a * b)),
-        "B_bb": float(-th0 * np.mean(b * b)),
-        "B_bV": float(th0 * np.mean(b * v)),
-        "B_aV": float(-np.mean(a * v)),
-        "B_eps": float(np.mean(eps * v) - np.mean(eps * b)),
-        "leak": float(np.mean(b * v_clu)),
-        "leak_row": float(np.mean(b * sample.v_row)),
-        "leak_col": float(np.mean(b * sample.v_col)),
-        "leak_own": float(np.mean(b * sample.v_cell)),
-        "coupling": float(
-            np.mean((a - th0 * b) ** 2) / max(np.mean(b * b), 1e-12)
-        ),
-    }
 
 
 class PLRDMLEstimator:
@@ -275,7 +221,9 @@ class PLRDMLEstimator:
         self._se_hat = math.sqrt(var_sum_add) / (n * denom)
 
         # Bias dissection from the oracle nuisances
-        self._diagnostics = _dissection(sample, l_hat, m_hat, denom, psi, n)
+        self._diagnostics = error_decomposition(
+            sample, l_hat, m_hat, denom, psi, n, var_sum_add
+        )
         if self._oob_stats is not None:
             self._diagnostics.update(
                 {f"oob_{k}": val for k, val in self._oob_stats.items()}
