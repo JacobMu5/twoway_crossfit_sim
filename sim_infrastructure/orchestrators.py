@@ -13,6 +13,15 @@ Classes:
 
 from __future__ import annotations
 
+import os
+# We already run one scenario per core. If each process ALSO lets NumPy
+# use all cores, you oversubscribe e.g. on an 8-core machine that's
+# 8x8 = 64 threads fighting over 8 cores making them block each other.
+# This solves this issue and lets the code run way faster!
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+           "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm
