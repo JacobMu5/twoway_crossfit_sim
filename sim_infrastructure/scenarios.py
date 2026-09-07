@@ -122,6 +122,56 @@ P02_DESIGNS = ["oracle", "as_iid", "multiway", "cluster_oob_sub"]
 # honest (omit-both) bags.
 P03_GAMMAS = [0.35, 0.45, 0.55, 0.65, 0.8]
 
+
+def _main_results_scenarios(
+    dgp: type[DGPProtocol], dgp_params: dict[str, Any]
+) -> list[SimulationScenario]:
+    """The main_results campaign for one DGP, as five named blocks."""
+    comparison_32x32 = _plr_campaign(
+        "main_results", dgp, dgp_params,
+        P01_DESIGNS,
+        [("lasso", None), ("gbm", None)], [(32, 32)],
+        n_simulations=300, first_seed=1,
+    )
+    mixed_arm = _plr_campaign(
+        "main_results", dgp, dgp_params,
+        P01_MIXED_DESIGNS,
+        [("srf", "gbm")], [(32, 32)],
+        n_simulations=300, first_seed=1,
+    )
+    oracle = _plr_campaign(
+        "main_results", dgp, dgp_params,
+        ["oracle"],
+        [("gbm", None)], [(32, 32)],
+        n_simulations=300, first_seed=1,
+    )
+    anatomy_64x64 = _plr_campaign(
+        "main_results", dgp, dgp_params,
+        P02_DESIGNS,
+        [("gbm", None)], [(64, 64)],
+        n_simulations=300, first_seed=1,
+    )
+    # sweep comparison: the honest design at a larger subsampling exponent
+    larger_bag = [SimulationScenario(
+        name=(f"main_results_{dgp(**dgp_params).name}"
+              f"_cluster_oob_sub_g0.65_gbm_32x32"),
+        campaign="main_results",
+        dgp=dgp,
+        dgp_params=dict(dgp_params),
+        estimator=PLRDMLEstimator,
+        estimator_params={"design": "cluster_oob_sub",
+                          "learner": "gbm", "sub_exponent": 0.65},
+        n_rows=32,
+        n_cols=32,
+        design="cluster_oob_sub_g0.65",
+        learner="gbm",
+        n_simulations=300,
+        first_seed=1,
+    )]
+    return (comparison_32x32 + mixed_arm + oracle
+            + anatomy_64x64 + larger_bag)
+
+
 CAMPAIGNS: dict[str, list[SimulationScenario]] = {
     # One run, both paper tables: the 32x32 block feeds the design
     # table, the gbm rows at both grids feed the anatomy table. All
@@ -129,53 +179,7 @@ CAMPAIGNS: dict[str, list[SimulationScenario]] = {
     "main_results": [
         scenario
         for dgp, dgp_params in DGPS
-        for scenario in (
-            _plr_campaign(
-                "main_results",
-                dgp, dgp_params,
-                P01_DESIGNS,
-                [("lasso", None), ("gbm", None)], [(32, 32)],
-                n_simulations=300, first_seed=1,
-            )
-            + _plr_campaign(
-                "main_results",
-                dgp, dgp_params,
-                P01_MIXED_DESIGNS,
-                [("srf", "gbm")], [(32, 32)],
-                n_simulations=300, first_seed=1,
-            )
-            + _plr_campaign(
-                "main_results",
-                dgp, dgp_params,
-                ["oracle"],
-                [("gbm", None)], [(32, 32)],
-                n_simulations=300, first_seed=1,
-            )
-            + _plr_campaign(
-                "main_results",
-                dgp, dgp_params,
-                P02_DESIGNS,
-                [("gbm", None)], [(64, 64)],
-                n_simulations=300, first_seed=1,
-            )
-            # sweep comparison: the honest design at a larger subsampling exponent
-            + [SimulationScenario(
-                name=(f"main_results_{dgp(**dgp_params).name}"
-                      f"_cluster_oob_sub_g0.65_gbm_32x32"),
-                campaign="main_results",
-                dgp=dgp,
-                dgp_params=dict(dgp_params),
-                estimator=PLRDMLEstimator,
-                estimator_params={"design": "cluster_oob_sub",
-                                  "learner": "gbm", "sub_exponent": 0.65},
-                n_rows=32,
-                n_cols=32,
-                design="cluster_oob_sub_g0.65",
-                learner="gbm",
-                n_simulations=300,  
-                first_seed=1,
-            )]
-        )
+        for scenario in _main_results_scenarios(dgp, dgp_params)
     ],
     # The oracle-only second block avoids duplicating the as_iid and
     # multiway cells the first block already smoke-tests.
