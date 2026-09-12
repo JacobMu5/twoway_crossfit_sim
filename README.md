@@ -64,26 +64,26 @@ The simulation infrastructure controls experiment execution only. The
 statistical logic lives in `dgps/` and `estimators/`; the reporting scripts
 read only the saved simulation outputs.
 
-    ## Setup and run
+## Setup and run
 
-    From the repository folder, with Python installed:
+From the repository folder, with Python installed:
 
-    ```bash
-    python -m pip install -r requirements.txt
-    python main.py smoke                # small pipeline check
-    python main.py main_results         # 20 scenarios, 300 replications each
-    python main.py p03_exponent_sweep    # additional bag-size comparisons
-    ```
+```bash
+python -m pip install -r requirements.txt
+python main.py smoke                # small pipeline check
+python main.py main_results         # 20 scenarios, 300 replications each
+python main.py p03_exponent_sweep    # additional bag-size comparisons
+```
 
-    The default is `main_results`. Each run writes
-    `results/<run_name>_summary.csv` and `results/<run_name>_records.csv`;
-    rerunning it replaces those files.
+The default is `main_results`. Each run writes
+`results/<run_name>_summary.csv` and `results/<run_name>_records.csv`;
+rerunning it replaces those files.
 
-    ## Reproducibility
+## Reproducibility
 
-    Replication `i` uses data seed `first_seed + i`. The estimator derives its
-    own seeds from this, so each run can be repeated. Comparable scenarios share
-    data seeds, allowing the designs to be compared on the same simulated samples.
+Replication `i` uses data seed `first_seed + i`. The estimator derives its
+own seeds from this, so each run can be repeated. Comparable scenarios share
+data seeds, allowing the designs to be compared on the same simulated samples.
 
-    The reported results were produced with Python 3.11.9 and the package 
-    versions pinned in `requirements.txt`.
+The reported results were produced with Python 3.11.9 and the package 
+versions pinned in `requirements.txt`.
