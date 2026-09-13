@@ -11,12 +11,12 @@ which cells to train on and which cells to predict for. The designs:
   shares a row or column with a predicted cell.
 * cluster_oob_sub: a sub-sampled two-way cluster bootstrap forest where
   each bag trains on a random ceil(N^0.45) x ceil(M^0.45) block of
-  clusters and each cell is predicted only by bags that drew neither its
-  row cluster nor its column cluster
+  clusters and each cell is predicted by exactly K bags that drew neither
+  its row cluster nor its column cluster
 * cluster_oob_nodrop: the no-drop version of cluster_oob_sub (the
   subsampled no-drop variant discussed by Chen & Chiang 2026): identical
-  bag draws, but every cell averages ALL fitted bags, that is bags sharing the
-  cell's row or column cluster (its "cross") are not dropped.
+  bag draws and the same K bags per cell, but bags sharing the cell's row or
+  column cluster (its "cross") are not dropped.
 
 Variables:
     DESIGNS (dict): maps design names to fold functions.
@@ -107,32 +107,40 @@ DESIGNS: dict[str, Callable[..., list[Split]]] = {
 
 def _fit_bags(
     x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
-    n_bags: int | None, min_cells: int, clip_predictions: bool,
-    sub_exponent: float,
+    n_bags: int | None, min_cells: int, sub_exponent: float,
 ):
     """Fit one base learner per sub-sampled cluster bag; shared bag loop.
 
-    Each of B bags trains on a random ceil(N**gamma) x ceil(M**gamma) block
-    of clusters drawn without replacement and predicts every cell, clipped
-    to the in-bag target range. Both bagged designs draw the same bags from
-    the same seed and differ only in how they average them, so this loop is
-    written once. Returns the per-bag predictions, the used-bag mask, and
-    the per-bag row/column omission masks.
+    Bags are drawn until every cell has K = n_bags bags avoiding its row and
+    column. Each bag trains on a random ceil(N**gamma) x ceil(M**gamma) block
+    of clusters drawn without replacement and predicts every cell. Both bagged
+    designs draw the same bags from the same seed and differ only in how they
+    average them, so this loop is written once. Returns the per-bag
+    predictions and the per-bag row/column omission masks.
     """
     m_r = max(2, int(np.ceil(n_rows ** sub_exponent)))
     m_c = max(2, int(np.ceil(n_cols ** sub_exponent)))
-    B = learner.n_bags if n_bags is None else n_bags
+    if m_r * m_c < min_cells:
+        raise ValueError(f"bags of {m_r} x {m_c} cells are below the {min_cells}-cell minimum")
+    K = learner.n_bags if n_bags is None else n_bags
     rng = np.random.default_rng(seed)
     n = len(target)
+     
+    # Draw row x column blocks until every cell has K bags avoiding its cross
+    blocks, eligible = [], np.zeros(n, dtype=int)
+    while eligible.min() < K:
+        rin = rng.choice(n_rows, size=m_r, replace=False)
+        cin = rng.choice(n_cols, size=m_c, replace=False)
+        blocks.append((rin, cin))
+        eligible += ~np.isin(rows, rin) & ~np.isin(cols, cin)
+    B = len(blocks)
     preds = np.zeros((B, n))
     used = np.zeros(B, dtype=bool)
     omit_row = np.ones((B, n_rows), dtype=bool)
     omit_col = np.ones((B, n_cols), dtype=bool)
 
     # Fit one base learner per bag on its drawn row x column block
-    for b in range(B):
-        rin = rng.choice(n_rows, size=m_r, replace=False)
-        cin = rng.choice(n_cols, size=m_c, replace=False)
+    for b, (rin, cin) in enumerate(blocks):
         omit_row[b, rin] = False
         omit_col[b, cin] = False
         row_mask = np.zeros(n_rows, dtype=bool)
@@ -140,110 +148,79 @@ def _fit_bags(
         col_mask = np.zeros(n_cols, dtype=bool)
         col_mask[cin] = True
         in_bag = row_mask[rows] & col_mask[cols]
-        if in_bag.sum() < min_cells:
-            continue
         model = learner.make(seed + b)
         model.fit(x[in_bag], target[in_bag])
-        p = np.asarray(model.predict(x))
-        if clip_predictions:
-            p = np.clip(p, float(target[in_bag].min()), float(target[in_bag].max()))
-        preds[b] = p
-        used[b] = True
-    return preds, used, omit_row, omit_col
+        preds[b] = np.asarray(model.predict(x))
+    return preds, omit_row, omit_col
 
 
 def predict_cluster_oob_sub(
     x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
-    n_bags: int | None = None, min_cells: int = 10, min_trees: int = 8,
-    return_stats: bool = False, clip_predictions: bool = True,
+    n_bags: int | None = None, min_cells: int = 10, return_stats: bool = False,
     sub_exponent: float = SUB_EXPONENT,
 ):
     """Sub-sampled two-way cluster forest with leave-row-and-column-out OOB.
 
     Each of B bags trains one base learner on a random block of
     ceil(N**gamma) rows x ceil(M**gamma) columns drawn without
-    replacement. A cell is then predicted by averaging only the bags that
-    drew neither its row cluster nor its column cluster, so no bag ever
-    saw a unit correlated with the target cell. Per-bag predictions are
-    clipped to the in-bag target range.
+    replacement. A cell is then predicted by averaging exactly K = n_bags bags
+    that drew neither its row cluster nor its column cluster, so no bag ever
+    saw a unit correlated with the target cell.
 
     Args:
-        n_bags (int | None): number of bag draws B; defaults to the
+        n_bags (int | None): bags averaged at every cell, K; defaults to the
             learner's n_bags.
-        min_cells (int): minimum trained cells required to keep a bag.
-        min_trees (int): minimum omit-both bags required per cell.
+        min_cells (int): minimum number of cells a bag must train on.
         return_stats (bool): if True, also return the bag-count statistics.
-        clip_predictions (bool): clip per-bag predictions to the in-bag range.
         sub_exponent (float): subsampling exponent gamma.
 
     Returns:
         np.ndarray: out-of-bag predictions, and a stats dict if requested.
-
-    Raises:
-        RuntimeError: if any cell has fewer than min_trees omit-both bags.
     """
-    preds, used, omit_row, omit_col = _fit_bags(
+    preds, omit_row, omit_col = _fit_bags(
         x, target, rows, cols, n_rows, n_cols, learner, seed,
-        n_bags, min_cells, clip_predictions, sub_exponent,
+        n_bags, min_cells, sub_exponent,
     )
+    K = learner.n_bags if n_bags is None else n_bags
     n = len(target)
 
-    # Average, per cell, only the bags omitting both its row and column
+    # Average, per cell, its first K bags omitting both its row and column
     out = np.empty(n)
-    both_counts = np.empty(n, dtype=int)
     for idx in range(n):
-        both = used & omit_row[:, rows[idx]] & omit_col[:, cols[idx]]
-        both_counts[idx] = both.sum()
-        if both.sum() < min_trees:
-            raise RuntimeError(
-                f"cluster_oob_sub: only {int(both.sum())} omit-both bags for "
-                f"cell {idx} (min_trees={min_trees}); raise n_bags -- never "
-                "fall back to dishonest bags (audit repair)"
-            )
+        both = np.flatnonzero(omit_row[:, rows[idx]] & omit_col[:, cols[idx]])[:K]
         out[idx] = preds[both, idx].mean()
     if return_stats:
-        stats = {
-            "mean_both_trees": float(both_counts.mean()),
-            "min_both_trees": float(both_counts.min()),
-        }
-        return out, stats
+        return out, {"bags_per_cell": float(K), "bags_drawn": float(len(preds))}
     return out
 
 def predict_cluster_nodrop(
     x, target, rows, cols, n_rows, n_cols, learner: LearnerSpec, seed,
-    n_bags: int | None = None, min_cells: int = 10, min_trees: int = 8,
-    return_stats: bool = False, clip_predictions: bool = True,
+    n_bags: int | None = None, min_cells: int = 10, return_stats: bool = False,
     sub_exponent: float = SUB_EXPONENT,
 ):
     """No-drop comparison baseline: the same bags, averaged WITHOUT the drop.
 
     Identical to predict_cluster_oob_sub -- same block sizes, same bag draws
-    from the same seed -- except every cell averages ALL fitted bags instead of
-    only the omit-both ones. A cell is therefore predicted partly by bags that
+    from the same seed, same K bags per cell -- except every cell averages the
+    first K fitted bags whether or not they trained on its own row or column
+    cluster. A cell is therefore predicted partly by bags that
     trained on its own row or column cluster, so the fitted nuisance error is
     correlated with the cell's own cluster shock (the "leak"). Running this next
     to predict_cluster_oob_sub with common draws isolates exactly what the
     cross-drop buys: honesty (a structurally mean-zero own-cluster term) versus
     an equal-or-larger bag average whose validity rests on that leak cancelling.
 
-    min_trees is accepted for signature parity with the honest design but is not
-    an honesty guard here (no omit-both pool to starve); it is unused.
-
     Returns:
         np.ndarray: predictions, and a stats dict if requested.
     """
-    preds, used, _, _ = _fit_bags(
+    preds, _, _ = _fit_bags(
         x, target, rows, cols, n_rows, n_cols, learner, seed,
-        n_bags, min_cells, clip_predictions, sub_exponent,
+        n_bags, min_cells, sub_exponent,
     )
-    if not used.any():
-        raise RuntimeError(
-            "cluster_oob_nodrop: no bag met min_cells; raise sub_exponent or "
-            "the grid size -- never return an empty average (audit repair)"
-        )
-    out = preds[used].mean(axis=0)
+    K = learner.n_bags if n_bags is None else n_bags
+    out = preds[:K].mean(axis=0)
     if return_stats:
-        return out, {"mean_both_trees": float(used.sum()), "min_both_trees": float(used.sum())}
+        return out, {"bags_per_cell": float(K), "bags_drawn": float(len(preds))}
     return out
 
 # Bagged designs produce predictions directly (a cell is an average over

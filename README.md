@@ -18,10 +18,11 @@ and experiment settings in separate components, each with a clear role.
 
 The comparisons cover no cross-fitting, random cell folds, two-way folds,
 honest bagging, no-drop bagging and an oracle benchmark. Honest bagging averages
-only bags excluding the evaluated cell's row and column.
+a fixed number of bags excluding the evaluated cell's row and column; bags are
+drawn until every cell has that many.
 
-For a given learner, base settings are shared across designs; training samples,
-averaging and clipping can differ. All designs use the same PLR score and
+For a given learner, base settings are shared across designs; training samples
+and averaging can differ. All designs use the same PLR score and
 two-way cluster variance formula.
 
 ## Structure
