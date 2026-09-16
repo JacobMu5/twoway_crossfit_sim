@@ -39,22 +39,38 @@ def two_way_variance(
     n_rows: int,
     n_cols: int,
     variant: str = "cgm",
+    splits: list[Split] | None = None,
 ) -> float:
-    """Two-way cluster variance of a sum of scores (un-scaled).
+    """Two-way score variance, scaled for sqrt(var) / (n * denom).
 
-    "additive" sums squared row sums and squared column sums (the form
-    in Chiang et al. 2022); "cgm" additionally subtracts the own-cell
-    diagonal (Cameron, Gelbach & Miller 2011) and is floored at zero.
+    "additive" pools squared row sums and squared column sums; "cgm"
+    additionally subtracts the own-cell diagonal (Cameron et al. 2011)
+    and is floored at zero.
+    "chiang" uses Chiang et al. (2022, eq. 2.6) within the supplied test
+    blocks, rescaled for sqrt(var) / (n * denom).
 
     Args:
         psi (np.ndarray): score values, shape (n,).
         rows, cols (np.ndarray): cluster indices, shape (n,).
         n_rows, n_cols (int): number of row and column clusters.
-        variant (str): "additive" or "cgm". Defaults to "cgm".
+        variant (str): "additive", "cgm", or "chiang". Defaults to "cgm".
+        splits (list[Split] | None): multiway folds; required for "chiang".
 
     Returns:
-        float: the un-scaled variance of the score sum.
+        float: pooled score-sum variance or the rescaled fold counterpart.
     """
+    if variant == "chiang":
+        if not splits:
+            raise ValueError("variant='chiang' requires the multiway splits")
+        gamma = 0.0
+        for sp in splits:
+            r, c = rows[sp.pred], cols[sp.pred]
+            nr, nc = len(np.unique(r)), len(np.unique(c))
+            block_sum = two_way_variance(
+                psi[sp.pred], r, c, n_rows, n_cols, variant="additive",
+            )
+            gamma += min(nr, nc) * block_sum / (nr * nc) ** 2
+        return len(psi) ** 2 * gamma / (len(splits) * min(n_rows, n_cols))
     rsum = np.bincount(rows, weights=psi, minlength=n_rows)
     csum = np.bincount(cols, weights=psi, minlength=n_cols)
     base = float(rsum @ rsum) + float(csum @ csum)
@@ -228,4 +244,16 @@ class PLRDMLEstimator:
             self._diagnostics.update(
                 {f"oob_{k}": val for k, val in self._oob_stats.items()}
             )
+
+        # Recreate the same multiway splits; no learners are refitted.
+        self._diagnostics["se_hat_chiang"] = math.nan
+        if self.design == "multiway":
+            splits = self._splits(sample, est_seed)
+            if any(len(sp.pred) * len(splits) != n for sp in splits):
+                raise ValueError("Chiang SE with the pooled PLR fit requires equal-sized test blocks")
+            var_chiang = two_way_variance(
+                psi, sample.rows, sample.cols, sample.n_rows, sample.n_cols,
+                variant="chiang", splits=splits,
+            )
+            self._diagnostics["se_hat_chiang"] = math.sqrt(var_chiang) / (n * denom)
 

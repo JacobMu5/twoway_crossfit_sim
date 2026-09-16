@@ -3,10 +3,10 @@ Module for the base-learner registry used in nuisance estimation.
 
 Each learner is a LearnerSpec with one factories and a default bag
 count. The "make" factory builds the base learner used everywhere: fit once by
-+the one-fit-per-fold designs (no-CF, as-IID, multiway) and bagged inside
-+the sub-sampled cluster-OOB design. A factory takes an integer seed and
-+returns a fresh scikit-learn estimator, so all random parts of estimation
-+are reproducible from the Monte Carlo seed. lasso is the inflexible
+the one-fit-per-fold designs (no-CF, as-IID, multiway) and bagged inside
+the sub-sampled cluster-OOB design. A factory takes an integer seed and
+returns a fresh scikit-learn estimator, so all random parts of estimation
+are reproducible from the Monte Carlo seed. lasso is the inflexible
 contrast, gbm the flexible leak exhibitor, and srf the treatment-side
 learner of the mixed-learner arm. Adding a learner is a one-entry
 change here.
@@ -34,7 +34,7 @@ class LearnerSpec:
 
     Attributes:
         make (Callable[[int], object]): factory for the base learner.
-        n_bags (int): default number of subsampled bag draws B.
+        n_bags (int): bags averaged at every cell, K, in the bagged designs.
     """
 
     make: Callable[[int], object]
