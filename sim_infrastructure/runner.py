@@ -10,7 +10,7 @@ from sim_infrastructure.protocols import DGPProtocol, EstimatorProtocol
 Z_95 = 1.959963984540054
 
 _MCSE_KEYS = ("leak",)
-_CORE_KEYS = {"sim_id", "theta_hat", "se_hat", "err", "covered", "covered_t"}
+_CORE_KEYS = {"sim_id", "theta_hat", "se_hat", "err", "covered", "covered_t", "covered_chiang"}
 
 
 class SimulationRunner:
@@ -45,6 +45,11 @@ class SimulationRunner:
                 "covered_t": float(abs(theta_hat - truth) <= t_crit * se_hat),
             }
             record.update(self.estimator.diagnostics)
+            se_ch = record.get("se_hat_chiang", float("nan"))
+            record["covered_chiang"] = (
+                float(abs(theta_hat - truth) <= Z_95 * se_ch)
+                if se_ch == se_ch else float("nan")
+            )            
             self.records.append(record)
 
     def summarize_results(self) -> dict:
@@ -54,6 +59,8 @@ class SimulationRunner:
         se = np.array([r["se_hat"] for r in self.records])
         covered = np.array([r["covered"] for r in self.records])
         covered_t = np.array([r["covered_t"] for r in self.records])
+        covered_chiang = np.array([r.get("covered_chiang", float("nan"))
+                                   for r in self.records])
 
         sd = float(theta.std(ddof=1)) if n_rep > 1 else float("nan")
         bias_mcse = (float(err.std(ddof=1) / math.sqrt(n_rep))
@@ -74,6 +81,8 @@ class SimulationRunner:
             "coverage": coverage,
             "coverage_mcse": float(math.sqrt(coverage * (1 - coverage) / n_rep)),
             "coverage_t": float(covered_t.mean()),
+            "coverage_chiang": (float(np.nanmean(covered_chiang))
+                                if np.isfinite(covered_chiang).any() else float("nan")),            
             "bias_elim_coverage": float(bias_elim.mean()),
         }
 
@@ -82,5 +91,9 @@ class SimulationRunner:
             summary[key] = float(vals.mean())
             if key in _MCSE_KEYS and len(vals) > 1:
                 summary[f"{key}_mcse"] = float(vals.std(ddof=1) / math.sqrt(len(vals)))
+        summary["se_ratio_chiang"] = (
+            float(summary.get("se_hat_chiang", float("nan")) / sd)
+            if sd > 0 else float("nan")
+        )
         return summary
 

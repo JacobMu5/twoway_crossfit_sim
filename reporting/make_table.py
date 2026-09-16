@@ -19,6 +19,15 @@ f = lambda x, k: f"{float(x):.{k}f}"
 warn = lambda msg: print("make_table:", msg, file=sys.stderr)
 grid_of = lambda r: int(float(r["n_rows"]))
 
+_blank = lambda v: str(v).strip() in ("", "nan", "NaN", "None")
+
+
+def cell(r, key, k):
+    """Read a summary column and format it; '-' when absent
+    (the CKMS columns are blank off the multiway design)."""
+    v = r.get(key, "")
+    return r"$-$" if _blank(v) else f(v, k)
+
 DESIGN = {"oracle": "Oracle", "no_cf": "No cross-fit", "as_iid": "As-i.i.d.",
           "multiway": r"Multiway ($K^2$-fold)",
           "cluster_oob_sub": "Sub-cluster OOB",
@@ -37,18 +46,21 @@ def perf(rows, designs, learners, grid, caption, label):
         by[key] = r
     out = [r"\begin{table}[!ht]", r"\centering",
            r"\caption{%s}  %% <-- your caption" % caption,
-           r"\label{%s}" % label, r"\begin{tabular}{lrrrrr}", r"\toprule",
-           r"Design & Bias & SD & RMSE & SE/SD & Cov.\ (95\%) \\"]
+           r"\label{%s}" % label, r"\begin{tabular}{lrrrrrrr}", r"\toprule",
+           r" & & & & \multicolumn{2}{c}{SE/SD} & \multicolumn{2}{c}{Cov.\ (95\%)} \\",
+           r"\cmidrule(lr){5-6}\cmidrule(lr){7-8}",
+           r"Design & Bias & SD & RMSE & Add. & CKMS & Add. & CKMS \\"]
     for lk in learners:
         out += [r"\midrule",
-                r"\multicolumn{6}{@{}l}{\emph{Learner: %s}} \\" % LEARNER[lk]]
+                r"\multicolumn{8}{@{}l}{\emph{Learner: %s}} \\" % LEARNER[lk]]
         for dk in designs:
             r = by.get((lk, dk))
             if not r:
                 warn(f"no row for learner={lk!r} design={dk!r} at {grid}x{grid}; omitted")
                 continue
             out.append(f"{DESIGN[dk]} & {f(r['bias'],3)} & {f(r['sd'],3)} & "
-                       f"{f(r['rmse'],3)} & {f(r['se_ratio'],2)} & {f(r['coverage'],3)} \\\\")
+                       f"{f(r['rmse'],3)} & {f(r['se_ratio'],2)} & {cell(r,'se_ratio_chiang',2)} & "
+                       f"{f(r['coverage'],3)} & {cell(r,'coverage_chiang',3)} \\\\")
     out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
             r"SD is the Monte-Carlo standard deviation of $\widehat\theta$; RMSE its root-mean-square "
             r"error; SE/SD the mean estimated (additive two-way) standard error divided by SD, so $1$ "
@@ -69,8 +81,11 @@ def anat(rows, designs, grids, caption, label):
         by.setdefault(r["design"], []).append(r)
     out = [r"\begin{table}[!ht]", r"\centering",
            r"\caption{%s}  %% <-- your caption" % caption,
-           r"\label{%s}" % label, r"\begin{tabular}{lrrrrrr}", r"\toprule",
-           r"Design & $N{=}M$ & Bias & SD & Cov. & Cov.$^{\dagger}$ & Leak \\", r"\midrule"]
+           r"\label{%s}" % label, r"\begin{tabular}{lrrrrrrr}", r"\toprule",
+           r" & & & & \multicolumn{2}{c}{Cov.\ (95\%)} & & \\",
+           r"\cmidrule(lr){5-6}",
+           r"Design & $N{=}M$ & Bias & SD & Add. & CKMS & Cov.$^{\dagger}$ & Leak \\",
+           r"\midrule"]
     for dk in designs:
         if dk not in by:
             warn(f"no rows for design={dk!r} (gbm) at grids {grids}; omitted")
@@ -79,7 +94,8 @@ def anat(rows, designs, grids, caption, label):
         for j, r in enumerate(sorted(by[dk], key=grid_of)):
             name = DESIGN[dk] if j == 0 else ""
             out.append(f"{name} & {grid_of(r)} & {f(r['bias'],3)} & {f(r['sd'],3)} & "
-                       f"{f(r['coverage'],3)} & {f(r['bias_elim_coverage'],3)} & {f(r['leak'],3)} \\\\")
+                       f"{f(r['coverage'],3)} & {cell(r,'coverage_chiang',3)} & "
+                       f"{f(r['bias_elim_coverage'],3)} & {f(r['leak'],3)} \\\\")
         if i < len(present) - 1:
             out.append(r"\addlinespace")
     out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
@@ -119,6 +135,39 @@ def gamma(rows, caption, label):
     return "\n".join(out)
 
 
+def decomp(rows, caption, label):
+    """Appendix bias-anatomy table: every scenario x the error-decomposition terms."""
+    dorder = {"oracle": 0, "no_cf": 1, "as_iid": 2, "multiway": 3,
+              "cluster_oob_sub": 4, "cluster_oob_sub_g0.65": 5, "cluster_oob_nodrop": 6}
+    lorder = {"lasso": 0, "gbm": 1, "srf-gbm": 2}
+    DES = dict(DESIGN); DES["cluster_oob_sub_g0.65"] = r"Sub-cluster OOB ($\gamma{=}0.65$)"
+    LRN = {"lasso": "Lasso", "gbm": "GBM", "srf-gbm": "SRF/GBM"}
+    rs = sorted(rows, key=lambda r: (lorder.get(r["learner"], 9),
+                                     dorder.get(r["design"], 9), grid_of(r)))
+    out = [r"\begin{table}[!ht]", r"\centering",
+           r"\caption{%s}  %% <-- your caption" % caption,
+           r"\label{%s}" % label, r"\footnotesize", r"\setlength{\tabcolsep}{4pt}",
+           r"\begin{tabular}{lrrrrrrrrr}", r"\toprule",
+           r"Design & $N$ & $E[a^2]$ & $E[b^2]$ & $B_{ab}$ & $B_{bb}$ & $B_{bV}$ & "
+           r"$B_{aV}$ & $B_{\varepsilon}$ & Leak \\", r"\midrule"]
+    cur = None
+    for r in rs:
+        if r["learner"] != cur:
+            cur = r["learner"]
+            out.append(r"\addlinespace" if cur != rs[0]["learner"] else "")
+            out.append(r"\multicolumn{10}{@{}l}{\emph{Learner: %s}} \\" % LRN.get(cur, cur))
+        out.append(f"{DES.get(r['design'], r['design'])} & {grid_of(r)} & "
+                   f"{f(r['Ea2'],2)} & {f(r['Eb2'],2)} & {f(r['B_ab'],3)} & {f(r['B_bb'],3)} & "
+                   f"{f(r['B_bV'],3)} & {f(r['B_aV'],3)} & {f(r['B_eps'],3)} & {f(r['leak'],3)} \\\\")
+    out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
+            r"Term-by-term anatomy of $\widehat\theta-\theta_0=(B_{ab}+B_{bb}+B_{bV}+B_{aV}+"
+            r"B_{\varepsilon})/\overline{\tilde d^2}$, with $a=\widehat\ell-\ell_0$ and "
+            r"$b=\widehat m-m_0$. $E[a^2],E[b^2]$ are the nuisance mean-squared errors; $B_{bV}$ (its "
+            r"clustered part is Leak) is the leakage channel. All entries are 300-replication means; "
+            r"Oracle uses the true nuisances so every term is $0$.",
+            r"\end{tablenotes}", r"\end{table}"]
+    return "\n".join(out)
+
 args = sys.argv[1:]
 name = args[0] if args and not args[0].endswith(".csv") else "ch5_perf"
 paths = [a for a in args if a.endswith(".csv")] or ["results/main_results_summary.csv"]
@@ -141,5 +190,7 @@ elif name == "ch5_anat":
                "Anatomy across designs, including sub-cluster OOB.", "tab:ch5-anat"))
 elif name == "ch5_gamma":
     print(gamma(rows, "The sub-sampling exponent dial.", "tab:ch5-gamma"))
+elif name == "decomp":
+    print(decomp(rows, "Full error decomposition across all scenarios.", "tab:decomp"))
 else:
     sys.exit(f"unknown table {name!r}; choose ch4_perf, ch4_anat, ch5_perf, ch5_anat, ch5_gamma")
