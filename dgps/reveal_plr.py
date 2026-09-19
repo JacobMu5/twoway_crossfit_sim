@@ -8,11 +8,14 @@ controls. Superseded DGPs live in dgps.legacy_plr.
 
 Classes:
     RevealPLRDGP: the paper DGP (revealed labels, confounded nuisances).
+    SimpleSignalPLRDGP: the thesis lead; one shared threshold/linear signal.  
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+
 
 import numpy as np
 
@@ -33,6 +36,7 @@ class RevealPLRDGP:
             resid_share in [0, 1], E[V^2] = sd_v^2.
         sd_eps (float): scale of the error term.
         resid_share (float): share of residual variance on row + col.
+        eps_resid_share (float | None): outcome-error share; None uses resid_share.
     """
 
     def __init__(
@@ -41,11 +45,14 @@ class RevealPLRDGP:
         sd_v: float = 1.0,
         sd_eps: float = 1.0,
         resid_share: float = 2.0 / 3.0,
+        eps_resid_share: float | None = None,        
     ) -> None:
         self.theta0: float = float(theta0)
         self.sd_v: float = float(sd_v)
         self.sd_eps: float = float(sd_eps)
         self.resid_share: float = float(resid_share)
+        self.eps_resid_share = self.resid_share if eps_resid_share is None else float(eps_resid_share)
+
 
     @property
     def true_theta(self) -> float:
@@ -104,9 +111,12 @@ class RevealPLRDGP:
         v_col = wc * rng.standard_normal(n_cols)[cols]
         v_cell = we * rng.standard_normal(n)
         v = self.sd_v * (v_row + v_col + v_cell)
-        eps = self.sd_eps * (wc * rng.standard_normal(n_rows)[rows]
-                             + wc * rng.standard_normal(n_cols)[cols]
-                             + we * rng.standard_normal(n))
+        # Outcome share defaults to the treatment share, reproducing the original draws.
+        ec = math.sqrt(self.eps_resid_share / 2.0)
+        ee = math.sqrt(max(1.0 - self.eps_resid_share, 0.0))
+        eps = self.sd_eps * (ec * rng.standard_normal(n_rows)[rows]
+                             + ec * rng.standard_normal(n_cols)[cols]
+                             + ee * rng.standard_normal(n))
 
         # Assemble outcome and oracle nuisances
         m0 = self.m0_of_x(x)
@@ -131,3 +141,35 @@ class RevealPLRDGP:
             v_col=self.sd_v * v_col,
             v_cell=self.sd_v * v_cell,
         )
+ 
+class SimpleSignalPLRDGP(RevealPLRDGP):
+    """Thesis lead: one shared signal on X3; cluster labels and shocks inherited.
+ 
+    m0 = 0.8 sign(X3) (threshold) or X3 (linear); g0 = m0 + 0.3 X4. Setting
+    include_signatures=False drops the row/column labels X1, X2 from X only.
+    """
+ 
+    def __init__(self, signal="threshold", include_signatures=True, **kwargs):
+        super().__init__(**kwargs)
+        if signal not in {"threshold", "linear"}:
+            raise ValueError("signal must be threshold or linear")
+        self.signal = signal
+        self.include_signatures = bool(include_signatures)
+ 
+    @property
+    def name(self) -> str:
+        suffix = (f"_rv{self.resid_share:g}_re{self.eps_resid_share:g}"
+                  if self.resid_share != 2 / 3 or self.eps_resid_share != 2 / 3 else "")
+        return f"simple_reveal_{self.signal}{suffix}" + ("" if self.include_signatures else "_nosignatures")
+ 
+    def m0_of_x(self, x: np.ndarray) -> np.ndarray:
+        if self.signal == "threshold":
+            return 0.8 * np.where(x[:, -3] > 0, 1.0, -1.0)
+        return x[:, -3]
+ 
+    def g0_of_x(self, x: np.ndarray) -> np.ndarray:
+        return self.m0_of_x(x) + 0.3 * x[:, -2]
+ 
+    def sample(self, n_rows, n_cols, seed=None):
+        sample = super().sample(n_rows, n_cols, seed)
+        return sample if self.include_signatures else replace(sample, x=sample.x[:, 2:].copy())
