@@ -6,31 +6,32 @@ from pathlib import Path
 import pandas as pd
  
 from sim_infrastructure.orchestrators import SimulationOrchestrator
-from sim_infrastructure.scenarios import RUNS
+from sim_infrastructure.scenarios import RUNS, PAPER_RUNS
 
 RESULTS_FOLDER = Path(__file__).resolve().parent / "results"
 
 
-def main(run_name: str = "main_results") -> None:
-    if run_name not in RUNS:
-        raise SystemExit(f"unknown run {run_name!r}; choose from {list(RUNS)}")
+def main(run_name: str = "main_results", out_dir: str | Path = RESULTS_FOLDER) -> None:
+    campaigns = PAPER_RUNS if run_name == "paper" else (run_name,)
+    unknown = [c for c in campaigns if c not in RUNS]
+    if unknown:
+        raise SystemExit(f"unknown run {unknown!r}; choose 'paper' or one of {list(RUNS)}")
 
-    orchestrator = SimulationOrchestrator(RUNS[run_name])
-    orchestrator.run_all()
-
-    summary = pd.DataFrame(orchestrator.summary_results)
-    records = pd.DataFrame(orchestrator.records)
-    # Preserve the existing CSV schema without putting `campaign` in scenarios.
-    summary.insert(1, "campaign", run_name)
-    records.insert(1, "campaign", run_name)
- 
-    RESULTS_FOLDER.mkdir(parents=True, exist_ok=True)
-    summary.to_csv(RESULTS_FOLDER / f"{run_name}_summary.csv", index=False)
-    records.to_csv(RESULTS_FOLDER / f"{run_name}_records.csv", index=False)
+    folder = Path(out_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in campaigns:
+        orchestrator = SimulationOrchestrator(RUNS[name])
+        orchestrator.run_all()
+        for kind, values in (("summary", orchestrator.summary_results),
+                             ("records", orchestrator.records)):
+            frame = pd.DataFrame(values)
+            frame.insert(1, "campaign", name)  # keep `campaign` out of scenarios
+            frame.to_csv(folder / f"{name}_{kind}.csv", index=False)
+        print(f"saved {name}", flush=True)
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if len(args) > 1:
-        raise SystemExit("usage: python main.py [main_results|smoke|p03_exponent_sweep]")
-    main(args[0] if args else "main_results")
+    if len(args) > 2:
+        raise SystemExit("usage: python main.py [run|paper] [output_dir]")
+    main(*args) if args else main()
