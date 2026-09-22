@@ -11,7 +11,7 @@ from sim_infrastructure.scenarios import RUNS, PAPER_RUNS
 RESULTS_FOLDER = Path(__file__).resolve().parent / "results"
 
 
-def main(run_name: str = "main_results", out_dir: str | Path = RESULTS_FOLDER) -> None:
+def main(run_name: str = "paper", out_dir: str | Path = RESULTS_FOLDER) -> None:
     campaigns = PAPER_RUNS if run_name == "paper" else (run_name,)
     unknown = [c for c in campaigns if c not in RUNS]
     if unknown:

@@ -30,7 +30,7 @@ class PLIVSample:
 class ChenChiangPLIV:
     """Chen--Chiang v4, Section 5, with explicit Gaussian calibration.
  
-    Unspecified laws/correlations and our mean shift are documented in CHANGES.md.
+    Unspecified laws/correlations and my mean shift are added.
     """
  
     def __init__(self, p=3, rho_x=.5, rho_uv=.5, theta0=1., x2_row_mean=0.):

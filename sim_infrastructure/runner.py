@@ -50,6 +50,11 @@ class SimulationRunner:
                 float(abs(theta_hat - truth) <= Z_95 * se_ch)
                 if se_ch == se_ch else float("nan")
             )            
+            se_cgm = record.get("se_hat_cgm", float("nan"))
+            record["covered_cgm"] = (
+                float(abs(theta_hat - truth) <= Z_95 * se_cgm)
+                if se_cgm == se_cgm else float("nan")
+            )
             self.records.append(record)
 
     def summarize_results(self) -> dict:
