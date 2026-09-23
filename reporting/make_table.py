@@ -1,196 +1,332 @@
-"""Print a paste-ready LaTeX table float from the merged results summary.
 
-All campaigns now live in one CSV (results/main_results_summary.csv), so the
-table is chosen by NAME. Chapter 4 shows the classical designs only (the
-problem); Chapter 5 adds the sub-cluster OOB design (the solution). Both draw
-on the same run, so every row shares one seed stream.
+"""Write the numbers of the ten thesis tables with pandas' to_latex.
 
-    python reporting/make_table.py <table> [csv ...]
+    python reporting/make_table.py   ->  reporting/tables/<name>.tex
 
-<table> is one of: ch4_perf, ch4_anat, ch5_perf, ch5_anat, ch5_gamma.
-Extra CSV paths are concatenated (e.g. to fold in a separate lasso-64 run).
-
-The LaTeX goes to stdout; diagnostics (rows loaded, duplicate keys, omitted
-rows) go to stderr, so `... > table.tex` still gives a clean file.
+Each file is a booktabs tabular; the caption and the notes of a table are in main.tex, around
+\\input{tables/<name>}. The numbers come from the summary CSV of each campaign (one line per design),
+in results/final2000/ or, for a campaign that was not rerun, in results/final300/.
 """
-import csv, sys
 
-f = lambda x, k: f"{float(x):.{k}f}"
-warn = lambda msg: print("make_table:", msg, file=sys.stderr)
-grid_of = lambda r: int(float(r["n_rows"]))
+from pathlib import Path
 
-_blank = lambda v: str(v).strip() in ("", "nan", "NaN", "None")
+import numpy as np
+import pandas as pd
 
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "reporting" / "tables"
 
-def cell(r, key, k):
-    """Read a summary column and format it; '-' when absent
-    (the CKMS columns are blank off the multiway design)."""
-    v = r.get(key, "")
-    return r"$-$" if _blank(v) else f(v, k)
+LEAD = "simple_reveal_threshold_rv0.9_re0.1"     # threshold DGP (lead_plr, fewclusters, sweep)
+LINEAR = "simple_reveal_linear_rv0.9_re0.1"      # linear-signal DGP (linear_plr)
 
-DESIGN = {"oracle": "Oracle", "no_cf": "No cross-fit", "as_iid": "As-i.i.d.",
-          "multiway": r"Multiway ($K^2$-fold)",
-          "cluster_oob_sub": "Sub-cluster OOB",
-          "cluster_oob_nodrop": "No-drop OOB"}
-LEARNER = {"lasso": "Lasso", "gbm": "GBM"}
-
-
-def perf(rows, designs, learners, grid, caption, label):
-    by = {}
-    for r in rows:
-        if grid_of(r) != grid:
-            continue
-        key = (r["learner"], r["design"])
-        if key in by:
-            warn(f"duplicate row {key} at {grid}x{grid}; keeping the last")
-        by[key] = r
-    out = [r"\begin{table}[!ht]", r"\centering",
-           r"\caption{%s}  %% <-- your caption" % caption,
-           r"\label{%s}" % label, r"\begin{tabular}{lrrrrrrr}", r"\toprule",
-           r" & & & & \multicolumn{2}{c}{SE/SD} & \multicolumn{2}{c}{Cov.\ (95\%)} \\",
-           r"\cmidrule(lr){5-6}\cmidrule(lr){7-8}",
-           r"Design & Bias & SD & RMSE & Add. & CKMS & Add. & CKMS \\"]
-    for lk in learners:
-        out += [r"\midrule",
-                r"\multicolumn{8}{@{}l}{\emph{Learner: %s}} \\" % LEARNER[lk]]
-        for dk in designs:
-            r = by.get((lk, dk))
-            if not r:
-                warn(f"no row for learner={lk!r} design={dk!r} at {grid}x{grid}; omitted")
-                continue
-            out.append(f"{DESIGN[dk]} & {f(r['bias'],3)} & {f(r['sd'],3)} & "
-                       f"{f(r['rmse'],3)} & {f(r['se_ratio'],2)} & {cell(r,'se_ratio_chiang',2)} & "
-                       f"{f(r['coverage'],3)} & {cell(r,'coverage_chiang',3)} \\\\")
-    out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
-            r"SD is the Monte-Carlo standard deviation of $\widehat\theta$; RMSE its root-mean-square "
-            r"error; SE/SD the mean estimated (additive two-way) standard error divided by SD, so $1$ "
-            r"indicates calibrated inference; Cov.\ the empirical coverage of the nominal $95\%$ CI.",
-            r"\end{tablenotes}", r"\end{table}"]
-    return "\n".join(out)
+LEAD_DESIGNS = {"oracle": "Oracle",
+                "no_cf": "Full sample",
+                "as_iid": "Cell cross-fit",
+                "multiway": "Two-way cross-fit",
+                "cluster_oob_sub": r"Bagging, $7\times7$",
+                "cluster_oob_sub_g0.666667": r"Bagging, $16\times16$",
+                "cluster_oob_sub_g0.833333": r"Bagging, $32\times32$",
+                "cluster_oob_nodrop": r"No-drop, $7\times7$"}
+NOATTR_DESIGNS = {"multiway": "Two-way cross-fit",
+                  "cluster_oob_sub": r"Bagging, $7\times7$"}
 
 
-def anat(rows, designs, grids, caption, label):
-    by, seen = {}, set()
-    for r in rows:
-        if r["learner"] != "gbm" or grid_of(r) not in grids:
-            continue
-        key = (r["design"], grid_of(r))
-        if key in seen:
-            warn(f"duplicate row {key}; it will appear twice in the table")
-        seen.add(key)
-        by.setdefault(r["design"], []).append(r)
-    out = [r"\begin{table}[!ht]", r"\centering",
-           r"\caption{%s}  %% <-- your caption" % caption,
-           r"\label{%s}" % label, r"\begin{tabular}{lrrrrrrr}", r"\toprule",
-           r" & & & & \multicolumn{2}{c}{Cov.\ (95\%)} & & \\",
-           r"\cmidrule(lr){5-6}",
-           r"Design & $N{=}M$ & Bias & SD & Add. & CKMS & Cov.$^{\dagger}$ & Leak \\",
-           r"\midrule"]
-    for dk in designs:
-        if dk not in by:
-            warn(f"no rows for design={dk!r} (gbm) at grids {grids}; omitted")
-    present = [d for d in designs if d in by]
-    for i, dk in enumerate(present):
-        for j, r in enumerate(sorted(by[dk], key=grid_of)):
-            name = DESIGN[dk] if j == 0 else ""
-            out.append(f"{name} & {grid_of(r)} & {f(r['bias'],3)} & {f(r['sd'],3)} & "
-                       f"{f(r['coverage'],3)} & {cell(r,'coverage_chiang',3)} & "
-                       f"{f(r['bias_elim_coverage'],3)} & {f(r['leak'],3)} \\\\")
-        if i < len(present) - 1:
-            out.append(r"\addlinespace")
-    out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
-            r"Concentrated (reveal) two-way PLR DGP, GBM learner, 300 replications. Cov.\ is coverage of "
-            r"the nominal $95\%$ CI; Cov.$^{\dagger}$ the same after removing the estimated bias, so a gap "
-            r"Cov.$^{\dagger}\!\gg\!$Cov.\ marks \emph{bias}-driven undercoverage. Leak is the clustering "
-            r"leakage into the score. Oracle uses the true nuisances.",
-            r"\end{tablenotes}", r"\end{table}"]
-    return "\n".join(out)
+def load(campaign, kind="summary"):
+    """Read results/final2000/<campaign>_<kind>.csv, or the final300 file if there is no rerun."""
+    for folder in ["final2000", "final300"]:
+        path = ROOT / "results" / folder / f"{campaign}_{kind}.csv"
+        if path.exists():
+            return pd.read_csv(path)
+    raise FileNotFoundError(f"no {kind} file for {campaign}")
 
 
-def gamma(rows, caption, label):
-    G = {"cluster_oob_sub": "0.45", "cluster_oob_sub_g0.65": "0.65"}
-    by = {}
-    for r in rows:
-        if r["learner"] != "gbm" or grid_of(r) != 32:
-            continue
-        if r["design"] in by:
-            warn(f"duplicate row for design={r['design']!r} at 32x32; keeping the last")
-        by[r["design"]] = r
-    out = [r"\begin{table}[!ht]", r"\centering",
-           r"\caption{%s}  %% <-- your caption" % caption,
-           r"\label{%s}" % label, r"\begin{tabular}{lrrrrr}", r"\toprule",
-           r"$\gamma$ & Bias & SD & RMSE & SE/SD & Cov.\ (95\%) \\", r"\midrule"]
-    for dk, g in G.items():
-        r = by.get(dk)
-        if not r:
-            warn(f"no row for design={dk!r} (gbm) at 32x32; gamma={g} omitted")
-            continue
-        out.append(f"${g}$ & {f(r['bias'],3)} & {f(r['sd'],3)} & "
-                   f"{f(r['rmse'],3)} & {f(r['se_ratio'],2)} & {f(r['coverage'],3)} \\\\")
-    out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
-            r"Sub-cluster OOB at bag exponent $\gamma$ (bag side $\lceil N^{\gamma}\rceil$ clusters), "
-            r"GBM, $32\times32$, 300 replications. Larger $\gamma$ trades bag fit quality against the "
-            r"number of honest (omit-both) bags.",
-            r"\end{tablenotes}", r"\end{table}"]
-    return "\n".join(out)
+def summary(campaign, design, dgp=None, learner="gbm", n=None):
+    """One design's summary line (used by thesis_figures.py)."""
+    s = load(campaign)
+    s = s[s.design == design]
+    if "learner" in s.columns:
+        s = s[s.learner == learner]
+    if dgp is not None:
+        s = s[s.dgp == dgp]
+    if n is not None:
+        s = s[s.n_rows == n]
+    assert len(s) == 1, f"{campaign}/{design}: expected one summary line, found {len(s)}"
+    return s.iloc[0]
 
 
-def decomp(rows, caption, label):
-    """Appendix bias-anatomy table: every scenario x the error-decomposition terms."""
-    dorder = {"oracle": 0, "no_cf": 1, "as_iid": 2, "multiway": 3,
-              "cluster_oob_sub": 4, "cluster_oob_sub_g0.65": 5, "cluster_oob_nodrop": 6}
-    lorder = {"lasso": 0, "gbm": 1, "srf-gbm": 2}
-    DES = dict(DESIGN); DES["cluster_oob_sub_g0.65"] = r"Sub-cluster OOB ($\gamma{=}0.65$)"
-    LRN = {"lasso": "Lasso", "gbm": "GBM", "srf-gbm": "SRF/GBM"}
-    rs = sorted(rows, key=lambda r: (lorder.get(r["learner"], 9),
-                                     dorder.get(r["design"], 9), grid_of(r)))
-    out = [r"\begin{table}[!ht]", r"\centering",
-           r"\caption{%s}  %% <-- your caption" % caption,
-           r"\label{%s}" % label, r"\footnotesize", r"\setlength{\tabcolsep}{4pt}",
-           r"\begin{tabular}{lrrrrrrrrr}", r"\toprule",
-           r"Design & $N$ & $E[a^2]$ & $E[b^2]$ & $B_{ab}$ & $B_{bb}$ & $B_{bV}$ & "
-           r"$B_{aV}$ & $B_{\varepsilon}$ & Leak \\", r"\midrule"]
-    cur = None
-    for r in rs:
-        if r["learner"] != cur:
-            cur = r["learner"]
-            out.append(r"\addlinespace" if cur != rs[0]["learner"] else "")
-            out.append(r"\multicolumn{10}{@{}l}{\emph{Learner: %s}} \\" % LRN.get(cur, cur))
-        out.append(f"{DES.get(r['design'], r['design'])} & {grid_of(r)} & "
-                   f"{f(r['Ea2'],2)} & {f(r['Eb2'],2)} & {f(r['B_ab'],3)} & {f(r['B_bb'],3)} & "
-                   f"{f(r['B_bV'],3)} & {f(r['B_aV'],3)} & {f(r['B_eps'],3)} & {f(r['leak'],3)} \\\\")
-    out += [r"\bottomrule", r"\end{tabular}", r"\begin{tablenotes}[Notes]",
-            r"Term-by-term anatomy of $\widehat\theta-\theta_0=(B_{ab}+B_{bb}+B_{bV}+B_{aV}+"
-            r"B_{\varepsilon})/\overline{\tilde d^2}$, with $a=\widehat\ell-\ell_0$ and "
-            r"$b=\widehat m-m_0$. $E[a^2],E[b^2]$ are the nuisance mean-squared errors; $B_{bV}$ (its "
-            r"clustered part is Leak) is the leakage channel. All entries are 300-replication means; "
-            r"Oracle uses the true nuisances so every term is $0$.",
-            r"\end{tablenotes}", r"\end{table}"]
-    return "\n".join(out)
+def cell(x, digits=3):
+    """0.057 -> 0.057, -0.057 -> $-$0.057 (a real minus sign); a rounded zero gets no sign."""
+    text = f"{x:.{digits}f}"
+    if float(text) == 0:
+        text = text.lstrip("-")
+    return text.replace("-", "$-$")
 
-args = sys.argv[1:]
-name = args[0] if args and not args[0].endswith(".csv") else "ch5_perf"
-paths = [a for a in args if a.endswith(".csv")] or ["results/main_results_summary.csv"]
-rows = [r for p in paths for r in csv.DictReader(open(p))]
-warn(f"loaded {len(rows)} rows from {', '.join(paths)}")
 
-if name == "ch4_perf":
-    print(perf(rows, ["no_cf", "as_iid", "multiway"], ["lasso", "gbm"], 32,
+def pick(s, designs, columns):
+    """The rows of these designs, renamed to their labels, with these columns."""
+    return s.set_index("design").loc[list(designs), columns].rename(index=designs)
 
-               "Classical cross-fitting designs across learners.", "tab:ch4-perf"))
-elif name == "ch4_anat":
-    print(anat(rows, ["oracle", "as_iid", "multiway"], [32, 64],
-               "Anatomy of cross-fitting failure: the classical designs.", "tab:ch4-anat"))
-elif name == "ch5_perf":
-    print(perf(rows, ["oracle", "no_cf", "as_iid", "multiway",
-                      "cluster_oob_sub", "cluster_oob_nodrop"], ["lasso", "gbm"], 32,
-               "All designs across learners.", "tab:ch5-perf"))
-elif name == "ch5_anat":
-    print(anat(rows, ["oracle", "as_iid", "multiway", "cluster_oob_sub"], [32, 64],
-               "Anatomy across designs, including sub-cluster OOB.", "tab:ch5-anat"))
-elif name == "ch5_gamma":
-    print(gamma(rows, "The sub-sampling exponent dial.", "tab:ch5-gamma"))
-elif name == "decomp":
-    print(decomp(rows, "Full error decomposition across all scenarios.", "tab:decomp"))
-else:
-    sys.exit(f"unknown table {name!r}; choose ch4_perf, ch4_anat, ch5_perf, ch5_anat, ch5_gamma")
+
+def headings(table, names, spanned=(), spanner=r"Coverage (95\%)"):
+    """Name the columns; the ones in spanned get a common heading above them."""
+    table.columns = pd.MultiIndex.from_tuples([(spanner if name in spanned else "", name) for name in names])
+
+
+def write(table, name, columns):
+    """Let pandas write the tabular, then add the two booktabs touches that to_latex cannot do.
+    Numbers get cell(); columns already turned into text are kept."""
+    text = table.to_latex(float_format=cell, na_rep="$-$", column_format=columns,
+                          multicolumn_format="c", multirow=False, index_names=False)
+    if table.columns.nlevels == 2:                   
+        spanned = [i for i, top in enumerate(table.columns.get_level_values(0)) if top]
+        skip = table.index.nlevels                   
+        rule = r"\cmidrule(lr){%d-%d}" % (skip + spanned[0] + 1, skip + spanned[-1] + 1)
+        text = text.replace("\\\\\n", "\\\\ " + rule + "\n", 1)           
+    if table.index.nlevels == 2:                    
+        width = table.index.nlevels + table.shape[1]                    
+        for n, group in enumerate(table.index.get_level_values(0).unique()):
+            heading = r"\multicolumn{%d}{l}{\emph{%s}} \\" % (width, group)
+            if n > 0:
+                heading = "\\addlinespace\n" + heading               
+            text = text.replace("\n" + group + " & ", "\n" + heading + "\n & ")
+    (OUT / f"{name}.tex").write_text(text, encoding="utf-8")
+    print("wrote", OUT / f"{name}.tex")
+
+
+# ================================================================ Chapter 5
+
+def lead_table():
+    s = load("lead_plr")
+    columns = ["bias", "sd", "rmse", "coverage", "covered_cgm", "coverage_chiang"]
+    gbm = pick(s[(s.dgp == LEAD) & (s.learner == "gbm")], LEAD_DESIGNS, columns)
+    lasso = pick(s[(s.dgp == LEAD) & (s.learner == "lasso")],
+                 {"no_cf": "Full sample", "multiway": "Two-way cross-fit"}, columns)
+    no_attributes = pick(s[s.dgp == LEAD + "_nosignatures"], NOATTR_DESIGNS, columns)
+
+    table = pd.concat({"GBM": gbm, "Lasso": lasso, "No attributes": no_attributes})
+    headings(table, ["Bias", "SD", "RMSE", "Add", "CGM", "Own"], spanned=["Add", "CGM", "Own"])
+    write(table, "lead", "llrrrrrr")
+
+
+def mechanism_table():
+    s = load("lead_plr")
+    s["product"] = (s.B_ab + s.B_bb) / s.denom        
+    s["leakage"] = (s.B_bV + s.B_aV) / s.denom
+    s["kappa"] = (s.B_ab / s.Eb2).where(s.Eb2 > 0)    
+    s["bound"] = np.sqrt((s.Ea2 - 2 * s.B_ab + s.Eb2).clip(lower=0) * s.Eb2) / s.denom
+    columns = ["product", "leakage", "denom", "Eb2", "kappa", "bound"]
+    baseline = pick(s[(s.dgp == LEAD) & (s.learner == "gbm")], LEAD_DESIGNS, columns)
+    no_attributes = pick(s[s.dgp == LEAD + "_nosignatures"], NOATTR_DESIGNS, columns)
+
+    table = pd.concat({"Baseline": baseline, "No attributes": no_attributes})
+    table.columns = ["Product", "Leakage", r"$\widehat J$", r"$\mathbb{E}_n[b^2]$", r"$\kappa$", "Bound"]
+    write(table, "mechanism", "llrrrrrr")
+
+
+PLIV_COLUMNS = ["bias", "sd", "rmse", "coverage", "covered_cgm", "bias_elim_coverage", "jacobian", "mse_d"]
+PLIV_NAMES = ["Bias", "SD", "RMSE", "Add", "CGM", "BE", r"$\widehat J$", r"$\mathrm{MSE}_m$"]
+
+
+def pliv_rows(s, designs):
+    table = pick(s, designs, PLIV_COLUMNS)
+    table["jacobian"] = [cell(v, 2) for v in table["jacobian"]]      
+    table["mse_d"] = [cell(v, 2) for v in table["mse_d"]]
+    return table
+
+
+def pliv_table():
+    s = load("pliv")
+    designs = {"oracle": "Oracle",
+               "no_cf": "Full sample",
+               "as_iid": "Cell cross-fit",
+               "multiway": "Two-way cross-fit",
+               "cluster_oob_sub": r"Bagging, $5\times5$"}
+    centred = pliv_rows(s[s.dgp == "chen_chiang_pliv_p3"], designs)
+    shifted = pliv_rows(s[s.dgp == "chen_chiang_pliv_p3_mu1"], designs)
+
+    table = pd.concat({r"$\mu=0$": centred, r"$\mu=1$": shifted})
+    headings(table, PLIV_NAMES, spanned=["Add", "CGM", "BE"])
+    write(table, "pliv", "llrrrrrrrr")
+
+
+def package_table():
+    s = load("package_pliv")
+    designs = {"oracle": "Oracle",
+               "no_cf": "Full sample",
+               "as_iid": "Cell cross-fit",
+               "multiway": "Two-way cross-fit",
+               "cluster_oob_sub": r"Bagging, $6\times5$",
+               "cluster_oob_sub_g0.8": r"Bagging, $20\times18$"}
+
+    table = pliv_rows(s, designs)
+    headings(table, PLIV_NAMES, spanned=["Add", "CGM", "BE"])
+    write(table, "package", "lrrrrrrrr")
+
+
+# ================================================================ Appendix B
+
+def exponents_table():
+    s = load("lead_exponent_sweep")
+    columns = ["bias", "sd", "rmse", "coverage", "bias_elim_coverage", "denom"]
+    designs = {"cluster_oob_sub_g0.35": r"$\gamma=0.35$",
+               "cluster_oob_sub_g0.45": r"$\gamma=0.45$",
+               "cluster_oob_sub_g0.55": r"$\gamma=0.55$",
+               "cluster_oob_sub_g0.65": r"$\gamma=0.65$",
+               "cluster_oob_sub_g0.8": r"$\gamma=0.8$"}
+    grid32 = pick(s[s.n_rows == 32], designs, columns)
+    grid64 = pick(s[s.n_rows == 64], designs, columns)
+    grid32.insert(0, "side", [4, 5, 7, 10, 17])       # bag side ceil(N^gamma); 32^0.8 is just above 16
+    grid64.insert(0, "side", [5, 7, 10, 15, 28])
+
+    table = pd.concat({r"$32\times32$": grid32, r"$64\times64$": grid64})
+    headings(table, ["Side", "Bias", "SD", "RMSE", "Add", "BE", r"$\widehat J$"], spanned=["Add", "BE"],
+             spanner="Coverage")
+    write(table, "exponents", "llrrrrrrr")
+
+
+def errors(records, design):
+    """The error of one design in every sample, sorted by sample."""
+    r = records[records.design == design].sort_values("sim_id")
+    assert list(r.sim_id) == list(range(len(r))), f"{design}: missing replications"
+    return r.err.to_numpy()
+
+
+def paired(records, a, b):
+    """Design a against design b on the same samples."""
+    ea = errors(records, a)
+    eb = errors(records, b)
+    d = 1000 * (ea**2 - eb**2)                            
+    return {"dmse": cell(d.mean(), 2),
+            "mcse": cell(d.std(ddof=1) / np.sqrt(len(d)), 2),
+            "closer": np.mean(np.abs(ea) < np.abs(eb)),                 
+            "gain": cell(100 * (1 - np.sqrt(np.mean(ea**2) / np.mean(eb**2))), 1)}
+
+
+def rows(comparisons):
+    """A table with one row per comparison: {row label: paired(...)}."""
+    return pd.DataFrame.from_dict(comparisons, orient="index")
+
+
+def paired_table():
+    # a paired comparison needs the error of both designs in every sample, so it reads the records
+    r = load("lead_plr", "records")
+    lead = r[(r.dgp == LEAD) & (r.learner == "gbm")]
+    no_attributes = r[(r.dgp == LEAD + "_nosignatures") & (r.learner == "gbm")]
+    repeated = load("repeated_partitions", "records")
+    linear = load("linear_plr", "records")
+    r = load("pliv", "records")
+    centred = r[r.dgp == "chen_chiang_pliv_p3"]
+    shifted = r[r.dgp == "chen_chiang_pliv_p3_mu1"]
+    package = load("package_pliv", "records")
+    r = load("fewclusters", "records")
+    few = r[r.dgp == LEAD]
+
+    table = pd.concat({
+        "Threshold PLR": rows({
+            r"Bagging $7\times7$ vs two-way": paired(lead, "cluster_oob_sub", "multiway"),
+            r"Bagging $32\times32$ vs two-way": paired(lead, "cluster_oob_sub_g0.833333", "multiway"),
+            r"Bagging $7\times7$ vs $32\times32$": paired(lead, "cluster_oob_sub", "cluster_oob_sub_g0.833333"),
+            r"Bagging $7\times7$ vs full sample": paired(lead, "cluster_oob_sub", "no_cf"),
+            r"Bagging $7\times7$ vs cell cross-fit": paired(lead, "cluster_oob_sub", "as_iid"),
+            r"Bagging $7\times7$ vs oracle": paired(lead, "cluster_oob_sub", "oracle"),
+            r"Bagging vs no-drop, $7\times7$": paired(lead, "cluster_oob_sub", "cluster_oob_nodrop"),
+            "No attributes: bagging vs two-way": paired(no_attributes, "cluster_oob_sub", "multiway")}),
+        "Repeated partitions": rows({
+            r"Mean of $10$ estimates vs one": paired(repeated, "rep_mean_S10", "rep_prediction_S1"),
+            r"Mean of $10$ predictions vs one": paired(repeated, "rep_prediction_S10", "rep_prediction_S1")}),
+        "Linear PLR": rows({
+            r"Bagging $5\times5$ vs two-way": paired(linear, "cluster_oob_sub", "multiway"),
+            r"Bagging $8\times8$ vs two-way": paired(linear, "cluster_oob_sub_g0.6", "multiway")}),
+        "Chen--Chiang PLIV": rows({
+            r"$\mu=0$: bagging $5\times5$ vs oracle": paired(centred, "cluster_oob_sub", "oracle"),
+            r"$\mu=1$: bagging $5\times5$ vs two-way": paired(shifted, "cluster_oob_sub", "multiway")}),
+        "Package PLIV": rows({
+            r"Bagging $6\times5$ vs two-way": paired(package, "cluster_oob_sub", "multiway"),
+            r"Bagging $20\times18$ vs two-way": paired(package, "cluster_oob_sub_g0.8", "multiway"),
+            r"Bagging $20\times18$ vs full sample": paired(package, "cluster_oob_sub_g0.8", "no_cf")}),
+        "Few clusters": rows({
+            r"Bagging $11\times3$ vs two-way": paired(few, "cluster_oob_sub", "multiway")})})
+    table.columns = [r"$\Delta\mathrm{MSE}$", "MCSE", "A closer", r"Gain (\%)"]
+    write(table, "paired", "llrrrr")
+
+
+def repeated_table():
+    rep = load("repeated_partitions")
+    s = load("lead_plr")
+    lead = s[(s.dgp == LEAD) & (s.learner == "gbm")]
+    columns = ["bias", "sd", "rmse", "mean_se", "coverage", "bias_elim_coverage", "Eb2"]
+
+    table = pd.concat({
+        "Single": pick(rep, {"rep_prediction_S1": "One partition"}, columns),
+        "Estimates": pick(rep, {"rep_mean_S10": "Mean of $10$",
+                                "rep_mean_S10_unadjusted": r"\quad without deviations",
+                                "rep_median_S10": "Median of $10$"}, columns),
+        "Predictions": pick(rep, {"rep_prediction_S2": "Mean of $2$",
+                                  "rep_prediction_S5": "Mean of $5$",
+                                  "rep_prediction_S10": "Mean of $10$"}, columns),
+        "Bagging": pick(lead, {"cluster_oob_sub_g0.833333": r"$32\times32$",
+                               "cluster_oob_sub": r"$7\times7$"}, columns)})
+    table.columns = ["Bias", "SD", "RMSE", "Mean SE", "Cov.", "BE", r"$\mathbb{E}_n[b^2]$"]
+    write(table, "repeated", "llrrrrrrr")
+
+
+def calibration_table():
+    s = load("lead_plr")
+    s["se_ratio_cgm"] = s.se_hat_cgm / s.sd           # mean CGM SE / SD
+    columns = ["sd", "se_ratio", "se_ratio_cgm", "se_ratio_chiang", "bias_elim_coverage"]
+    baseline = pick(s[(s.dgp == LEAD) & (s.learner == "gbm")], LEAD_DESIGNS, columns)
+    no_attributes = pick(s[s.dgp == LEAD + "_nosignatures"], NOATTR_DESIGNS, columns)
+
+    table = pd.concat({"Baseline": baseline, "No attributes": no_attributes})
+    for c in ["se_ratio", "se_ratio_cgm", "se_ratio_chiang"]:                
+        table[c] = [cell(v, 2) if pd.notna(v) else "$-$" for v in table[c]]
+    headings(table, ["SD", "Add", "CGM", "Own", "BE"], spanned=["Add", "CGM", "Own"], spanner="Mean SE / SD")
+    write(table, "calibration", "llrrrrr")
+
+
+def signals_table():
+    s = load("linear_plr")
+    designs = {"oracle": "Oracle",
+               "no_cf": "Full sample",
+               "as_iid": "Cell cross-fit",
+               "multiway": "Two-way cross-fit",
+               "cluster_oob_sub": r"Bagging, $5\times5$",
+               "cluster_oob_sub_g0.6": r"Bagging, $8\times8$",
+               "cluster_oob_sub_g0.8": r"Bagging, $16\times16$",
+               "cluster_oob_nodrop": r"No-drop, $5\times5$"}
+    columns = ["bias", "sd", "rmse", "coverage", "covered_cgm", "coverage_chiang"]
+
+    table = pick(s[(s.dgp == LINEAR) & (s.learner == "gbm")], designs, columns)
+    headings(table, ["Bias", "SD", "RMSE", "Add", "CGM", "Own"], spanned=["Add", "CGM", "Own"])
+    write(table, "signals", "lrrrrrr")
+
+
+def fewclusters_table():
+    s = load("fewclusters")
+    s["product"] = (s.B_ab + s.B_bb) / s.denom        
+    s["leakage"] = (s.B_bV + s.B_aV) / s.denom
+    designs = {"oracle": "Oracle",
+               "as_iid": "Cell cross-fit",
+               "multiway": "Two-way cross-fit",
+               "cluster_oob_sub": r"Bagging, $11\times3$",
+               "cluster_oob_sub_g0.8": r"Bagging, $70\times6$"}
+    columns = ["bias", "sd", "rmse", "coverage", "coverage_t", "coverage_chiang", "leakage", "product"]
+
+    table = pick(s[s.dgp == LEAD], designs, columns)
+    headings(table, ["Bias", "SD", "RMSE", "Add", r"Add, $t_7$", "Own", "Leakage", "Product"],
+             spanned=["Add", r"Add, $t_7$", "Own"])
+    write(table, "fewclusters", "lrrrrrrrr")
+
+
+if __name__ == "__main__":
+    OUT.mkdir(parents=True, exist_ok=True)
+    lead_table()     
+    mechanism_table()
+    pliv_table()
+    package_table()
+    exponents_table()       
+    paired_table()
+    repeated_table()
+    calibration_table()
+    signals_table()
+    fewclusters_table()

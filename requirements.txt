@@ -7,3 +7,4 @@ threadpoolctl==3.6.0
 # reporting/multiway_partition_figure.py only
 matplotlib==3.10.1
 doubleml==0.11.1
+seaborn==0.13.2
