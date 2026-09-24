@@ -113,14 +113,13 @@ def mechanism_table():
     s["product"] = (s.B_ab + s.B_bb) / s.denom        
     s["leakage"] = (s.B_bV + s.B_aV) / s.denom
     s["kappa"] = (s.B_ab / s.Eb2).where(s.Eb2 > 0)    
-    s["bound"] = np.sqrt((s.Ea2 - 2 * s.B_ab + s.Eb2).clip(lower=0) * s.Eb2) / s.denom
-    columns = ["product", "leakage", "denom", "Eb2", "kappa", "bound"]
+    columns = ["product", "leakage", "denom", "Eb2", "kappa"]
     baseline = pick(s[(s.dgp == LEAD) & (s.learner == "gbm")], LEAD_DESIGNS, columns)
     no_attributes = pick(s[s.dgp == LEAD + "_nosignatures"], NOATTR_DESIGNS, columns)
 
     table = pd.concat({"Baseline": baseline, "No attributes": no_attributes})
-    table.columns = ["Product", "Leakage", r"$\widehat J$", r"$\mathbb{E}_n[b^2]$", r"$\kappa$", "Bound"]
-    write(table, "mechanism", "llrrrrrr")
+    table.columns = ["Product", "Leakage", r"$\widehat J$", r"$\mathbb{E}_n[b^2]$", r"$\kappa$"]
+    write(table, "mechanism", "llrrrrr")
 
 
 PLIV_COLUMNS = ["bias", "sd", "rmse", "coverage", "covered_cgm", "bias_elim_coverage", "jacobian", "mse_d"]
