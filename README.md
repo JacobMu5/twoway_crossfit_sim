@@ -29,7 +29,7 @@ two-way cluster variance formula.
 
 | Location | Contents |
 | --- | --- |
-| `dgps/` | Data generation; `reveal_plr.py` is used in the current experiments. |
+| `dgps/` | Data generation: `reveal_plr.py` (PLR designs), `pliv.py` and `package_pliv.py` (PLIV designs). |
 | `estimators/` | Learners, training designs, PLR estimation and separate simulation diagnostics. |
 | `sim_infrastructure/` | Experiment settings, runner, one orchestrator and component interfaces. |
 | `reporting/` | Builds the LaTeX tables and figures from the saved CSVs. |
@@ -71,14 +71,19 @@ From the repository folder, with Python installed:
 
 ```bash
 python -m pip install -r requirements.txt
-python main.py smoke                # small pipeline check
-python main.py main_results         # 20 scenarios, 300 replications each
-python main.py p03_exponent_sweep    # additional bag-size comparisons
+python main.py smoke                                  # small pipeline check
+python main.py paper results/final2000                # all six thesis campaigns (writes to results/final2000/)
+python main.py lead_plr results/final2000             # or one campaign: lead_plr, linear_plr, pliv,
+                                                      #   package_pliv, fewclusters, lead_exponent_sweep
+python supplementary/repeated_partitions.py           # repeated two-way partitions (Appendix table)
+python reporting/make_table.py                        # all LaTeX tables  -> reporting/tables/
+python reporting/thesis_figures.py                    # the two Chapter 5 figures -> reporting/figures/
+python reporting/multiway_partition_figure.py         # partition figure  -> reporting/figures/ (needs doubleml)
 ```
 
-The default is `main_results`. Each run writes
-`results/<run_name>_summary.csv` and `results/<run_name>_records.csv`;
-rerunning it replaces those files.
+The campaigns use 2,000 replications each, except `lead_exponent_sweep` (1,000 per configuration).
+Each run writes `<run_name>_summary.csv` and `<run_name>_records.csv` to the output folder,
+rerunning it replaces those files. `reporting/make_table.py` reads `results/final2000/`.
 
 ## Reproducibility
 

@@ -1,4 +1,3 @@
-
 """Write the numbers of the ten thesis tables with pandas' to_latex.
 
     python reporting/make_table.py   ->  reporting/tables/<name>.tex
@@ -183,72 +182,6 @@ def exponents_table():
     write(table, "exponents", "llrrrrrrr")
 
 
-def errors(records, design):
-    """The error of one design in every sample, sorted by sample."""
-    r = records[records.design == design].sort_values("sim_id")
-    assert list(r.sim_id) == list(range(len(r))), f"{design}: missing replications"
-    return r.err.to_numpy()
-
-
-def paired(records, a, b):
-    """Design a against design b on the same samples."""
-    ea = errors(records, a)
-    eb = errors(records, b)
-    d = 1000 * (ea**2 - eb**2)                            
-    return {"dmse": cell(d.mean(), 2),
-            "mcse": cell(d.std(ddof=1) / np.sqrt(len(d)), 2),
-            "closer": np.mean(np.abs(ea) < np.abs(eb)),                 
-            "gain": cell(100 * (1 - np.sqrt(np.mean(ea**2) / np.mean(eb**2))), 1)}
-
-
-def rows(comparisons):
-    """A table with one row per comparison: {row label: paired(...)}."""
-    return pd.DataFrame.from_dict(comparisons, orient="index")
-
-
-def paired_table():
-    # a paired comparison needs the error of both designs in every sample, so it reads the records
-    r = load("lead_plr", "records")
-    lead = r[(r.dgp == LEAD) & (r.learner == "gbm")]
-    no_attributes = r[(r.dgp == LEAD + "_nosignatures") & (r.learner == "gbm")]
-    repeated = load("repeated_partitions", "records")
-    linear = load("linear_plr", "records")
-    r = load("pliv", "records")
-    centred = r[r.dgp == "chen_chiang_pliv_p3"]
-    shifted = r[r.dgp == "chen_chiang_pliv_p3_mu1"]
-    package = load("package_pliv", "records")
-    r = load("fewclusters", "records")
-    few = r[r.dgp == LEAD]
-
-    table = pd.concat({
-        "Threshold PLR": rows({
-            r"Bagging $7\times7$ vs two-way": paired(lead, "cluster_oob_sub", "multiway"),
-            r"Bagging $32\times32$ vs two-way": paired(lead, "cluster_oob_sub_g0.833333", "multiway"),
-            r"Bagging $7\times7$ vs $32\times32$": paired(lead, "cluster_oob_sub", "cluster_oob_sub_g0.833333"),
-            r"Bagging $7\times7$ vs full sample": paired(lead, "cluster_oob_sub", "no_cf"),
-            r"Bagging $7\times7$ vs cell cross-fit": paired(lead, "cluster_oob_sub", "as_iid"),
-            r"Bagging $7\times7$ vs oracle": paired(lead, "cluster_oob_sub", "oracle"),
-            r"Bagging vs no-drop, $7\times7$": paired(lead, "cluster_oob_sub", "cluster_oob_nodrop"),
-            "No attributes: bagging vs two-way": paired(no_attributes, "cluster_oob_sub", "multiway")}),
-        "Repeated partitions": rows({
-            r"Mean of $10$ estimates vs one": paired(repeated, "rep_mean_S10", "rep_prediction_S1"),
-            r"Mean of $10$ predictions vs one": paired(repeated, "rep_prediction_S10", "rep_prediction_S1")}),
-        "Linear PLR": rows({
-            r"Bagging $5\times5$ vs two-way": paired(linear, "cluster_oob_sub", "multiway"),
-            r"Bagging $8\times8$ vs two-way": paired(linear, "cluster_oob_sub_g0.6", "multiway")}),
-        "Chen--Chiang PLIV": rows({
-            r"$\mu=0$: bagging $5\times5$ vs oracle": paired(centred, "cluster_oob_sub", "oracle"),
-            r"$\mu=1$: bagging $5\times5$ vs two-way": paired(shifted, "cluster_oob_sub", "multiway")}),
-        "Package PLIV": rows({
-            r"Bagging $6\times5$ vs two-way": paired(package, "cluster_oob_sub", "multiway"),
-            r"Bagging $20\times18$ vs two-way": paired(package, "cluster_oob_sub_g0.8", "multiway"),
-            r"Bagging $20\times18$ vs full sample": paired(package, "cluster_oob_sub_g0.8", "no_cf")}),
-        "Few clusters": rows({
-            r"Bagging $11\times3$ vs two-way": paired(few, "cluster_oob_sub", "multiway")})})
-    table.columns = [r"$\Delta\mathrm{MSE}$", "MCSE", "A closer", r"Gain (\%)"]
-    write(table, "paired", "llrrrr")
-
-
 def repeated_table():
     rep = load("repeated_partitions")
     s = load("lead_plr")
@@ -267,20 +200,6 @@ def repeated_table():
                                "cluster_oob_sub": r"$7\times7$"}, columns)})
     table.columns = ["Bias", "SD", "RMSE", "Mean SE", "Cov.", "BE", r"$\mathbb{E}_n[b^2]$"]
     write(table, "repeated", "llrrrrrrr")
-
-
-def calibration_table():
-    s = load("lead_plr")
-    s["se_ratio_cgm"] = s.se_hat_cgm / s.sd           # mean CGM SE / SD
-    columns = ["sd", "se_ratio", "se_ratio_cgm", "se_ratio_chiang", "bias_elim_coverage"]
-    baseline = pick(s[(s.dgp == LEAD) & (s.learner == "gbm")], LEAD_DESIGNS, columns)
-    no_attributes = pick(s[s.dgp == LEAD + "_nosignatures"], NOATTR_DESIGNS, columns)
-
-    table = pd.concat({"Baseline": baseline, "No attributes": no_attributes})
-    for c in ["se_ratio", "se_ratio_cgm", "se_ratio_chiang"]:                
-        table[c] = [cell(v, 2) if pd.notna(v) else "$-$" for v in table[c]]
-    headings(table, ["SD", "Add", "CGM", "Own", "BE"], spanned=["Add", "CGM", "Own"], spanner="Mean SE / SD")
-    write(table, "calibration", "llrrrrr")
 
 
 def signals_table():
@@ -309,12 +228,12 @@ def fewclusters_table():
                "multiway": "Two-way cross-fit",
                "cluster_oob_sub": r"Bagging, $11\times3$",
                "cluster_oob_sub_g0.8": r"Bagging, $70\times6$"}
-    columns = ["bias", "sd", "rmse", "coverage", "coverage_t", "coverage_chiang", "leakage", "product"]
+    columns = ["bias", "sd", "rmse", "coverage", "coverage_chiang", "leakage", "product"]
 
     table = pick(s[s.dgp == LEAD], designs, columns)
-    headings(table, ["Bias", "SD", "RMSE", "Add", r"Add, $t_7$", "Own", "Leakage", "Product"],
-             spanned=["Add", r"Add, $t_7$", "Own"])
-    write(table, "fewclusters", "lrrrrrrrr")
+    headings(table, ["Bias", "SD", "RMSE", "Add", "Own", "Leakage", "Product"],
+             spanned=["Add", "Own"])
+    write(table, "fewclusters", "lrrrrrrr")
 
 
 if __name__ == "__main__":
@@ -324,8 +243,6 @@ if __name__ == "__main__":
     pliv_table()
     package_table()
     exponents_table()       
-    paired_table()
     repeated_table()
-    calibration_table()
     signals_table()
     fewclusters_table()

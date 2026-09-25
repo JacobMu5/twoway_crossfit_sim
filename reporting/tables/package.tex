@@ -1,0 +1,13 @@
+\begin{tabular}{lrrrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{} & \multicolumn{3}{c}{Coverage (95\%)} & \multicolumn{2}{c}{} \\ \cmidrule(lr){5-7}
+ & Bias & SD & RMSE & Add & CGM & BE & $\widehat J$ & $\mathrm{MSE}_m$ \\
+\midrule
+Oracle & $-$0.009 & 0.110 & 0.111 & 0.955 & 0.932 & 0.945 & 0.60 & 0.00 \\
+Full sample & 0.000 & 0.106 & 0.106 & 0.933 & 0.904 & 0.933 & 0.50 & 0.13 \\
+Cell cross-fit & 0.010 & 0.108 & 0.109 & 0.912 & 0.885 & 0.924 & 0.60 & 0.17 \\
+Two-way cross-fit & 0.017 & 0.130 & 0.131 & 0.876 & 0.839 & 0.891 & 0.68 & 0.30 \\
+Bagging, $6\times5$ & 0.112 & 0.104 & 0.153 & 0.759 & 0.712 & 0.946 & 0.65 & 0.17 \\
+Bagging, $20\times18$ & 0.015 & 0.113 & 0.114 & 0.916 & 0.892 & 0.930 & 0.63 & 0.11 \\
+\bottomrule
+\end{tabular}

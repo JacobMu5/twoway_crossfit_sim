@@ -1,0 +1,22 @@
+\begin{tabular}{llrrrrrrr}
+\toprule
+ &  & Bias & SD & RMSE & Mean SE & Cov. & BE & $\mathbb{E}_n[b^2]$ \\
+\midrule
+\multicolumn{9}{l}{\emph{Single}} \\
+ & One partition & $-$0.057 & 0.044 & 0.072 & 0.034 & 0.577 & 0.860 & 0.444 \\
+\addlinespace
+\multicolumn{9}{l}{\emph{Estimates}} \\
+ & Mean of $10$ & $-$0.057 & 0.036 & 0.068 & 0.043 & 0.750 & 0.977 & 0.442 \\
+ & \quad without deviations & $-$0.057 & 0.036 & 0.068 & 0.034 & 0.593 & 0.935 & 0.442 \\
+ & Median of $10$ & $-$0.058 & 0.037 & 0.068 & 0.039 & 0.681 & 0.961 & 0.442 \\
+\addlinespace
+\multicolumn{9}{l}{\emph{Predictions}} \\
+ & Mean of $2$ & $-$0.040 & 0.040 & 0.057 & 0.034 & 0.730 & 0.896 & 0.303 \\
+ & Mean of $5$ & $-$0.029 & 0.037 & 0.047 & 0.033 & 0.820 & 0.923 & 0.218 \\
+ & Mean of $10$ & $-$0.025 & 0.036 & 0.044 & 0.033 & 0.850 & 0.926 & 0.190 \\
+\addlinespace
+\multicolumn{9}{l}{\emph{Bagging}} \\
+ & $32\times32$ & $-$0.022 & 0.036 & 0.042 & 0.033 & 0.869 & 0.928 & 0.163 \\
+ & $7\times7$ & 0.006 & 0.032 & 0.032 & 0.034 & 0.960 & 0.960 & 0.056 \\
+\bottomrule
+\end{tabular}

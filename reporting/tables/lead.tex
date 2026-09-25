@@ -1,0 +1,24 @@
+\begin{tabular}{llrrrrrr}
+\toprule
+ &  & \multicolumn{3}{c}{} & \multicolumn{3}{c}{Coverage (95\%)} \\ \cmidrule(lr){6-8}
+ &  & Bias & SD & RMSE & Add & CGM & Own \\
+\midrule
+\multicolumn{8}{l}{\emph{GBM}} \\
+ & Oracle & 0.000 & 0.031 & 0.031 & 0.962 & 0.933 & $-$ \\
+ & Full sample & 0.039 & 0.038 & 0.054 & 0.868 & 0.770 & $-$ \\
+ & Cell cross-fit & 0.073 & 0.040 & 0.083 & 0.579 & 0.442 & $-$ \\
+ & Two-way cross-fit & $-$0.057 & 0.044 & 0.072 & 0.577 & 0.522 & 0.695 \\
+ & Bagging, $7\times7$ & 0.006 & 0.032 & 0.032 & 0.960 & 0.923 & $-$ \\
+ & Bagging, $16\times16$ & $-$0.011 & 0.033 & 0.035 & 0.937 & 0.892 & $-$ \\
+ & Bagging, $32\times32$ & $-$0.022 & 0.036 & 0.042 & 0.869 & 0.816 & $-$ \\
+ & No-drop, $7\times7$ & 0.016 & 0.031 & 0.035 & 0.944 & 0.905 & $-$ \\
+\addlinespace
+\multicolumn{8}{l}{\emph{Lasso}} \\
+ & Full sample & 0.194 & 0.033 & 0.197 & 0.000 & 0.000 & $-$ \\
+ & Two-way cross-fit & 0.183 & 0.036 & 0.187 & 0.001 & 0.000 & 0.002 \\
+\addlinespace
+\multicolumn{8}{l}{\emph{No attributes}} \\
+ & Two-way cross-fit & $-$0.014 & 0.033 & 0.036 & 0.928 & 0.876 & 0.971 \\
+ & Bagging, $7\times7$ & 0.009 & 0.031 & 0.032 & 0.951 & 0.924 & $-$ \\
+\bottomrule
+\end{tabular}

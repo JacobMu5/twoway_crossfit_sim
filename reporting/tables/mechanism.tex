@@ -1,0 +1,19 @@
+\begin{tabular}{llrrrrr}
+\toprule
+ &  & Product & Leakage & $\widehat J$ & $\mathbb{E}_n[b^2]$ & $\kappa$ \\
+\midrule
+\multicolumn{7}{l}{\emph{Baseline}} \\
+ & Oracle & 0.000 & 0.000 & 1.000 & 0.000 & $-$ \\
+ & Full sample & $-$0.088 & 0.127 & 0.420 & 0.267 & 0.862 \\
+ & Cell cross-fit & $-$0.109 & 0.182 & 0.462 & 0.256 & 0.803 \\
+ & Two-way cross-fit & $-$0.057 & 0.000 & 1.442 & 0.444 & 0.815 \\
+ & Bagging, $7\times7$ & 0.007 & 0.000 & 1.056 & 0.056 & 1.125 \\
+ & Bagging, $16\times16$ & $-$0.010 & 0.000 & 1.095 & 0.095 & 0.880 \\
+ & Bagging, $32\times32$ & $-$0.021 & $-$0.001 & 1.164 & 0.163 & 0.850 \\
+ & No-drop, $7\times7$ & 0.007 & 0.010 & 0.926 & 0.055 & 1.121 \\
+\addlinespace
+\multicolumn{7}{l}{\emph{No attributes}} \\
+ & Two-way cross-fit & $-$0.014 & 0.000 & 1.090 & 0.090 & 0.835 \\
+ & Bagging, $7\times7$ & 0.009 & 0.000 & 1.039 & 0.039 & 1.246 \\
+\bottomrule
+\end{tabular}
